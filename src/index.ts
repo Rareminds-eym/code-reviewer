@@ -140,6 +140,210 @@ function authenticateUsageRequest(request: Request, env: Env): void {
     }
 }
 
+/**
+ * Debug function that tests the full Cliq mention flow and returns diagnostics.
+ * This is a temporary debug tool — remove after fixing the mention issue.
+ */
+async function debugCliqMention(env: Env, githubUsername: string): Promise<Record<string, unknown>> {
+    const steps: Record<string, unknown>[] = [];
+    const result: Record<string, unknown> = { githubUsername, steps };
+
+    // Step 1: Check env vars
+    const hasClientId = !!env.CLIQ_CLIENT_ID;
+    const hasClientSecret = !!env.CLIQ_CLIENT_SECRET;
+    const hasRefreshToken = !!env.CLIQ_REFRESH_TOKEN;
+    const dbName = env.CLIQ_DB_NAME ?? '(not set)';
+    const botName = env.CLIQ_BOT_NAME ?? '(not set)';
+    const channelId = env.CLIQ_CHANNEL_ID ?? '(not set)';
+
+    steps.push({
+        step: '1. Environment Variables',
+        hasClientId,
+        hasClientSecret,
+        hasRefreshToken,
+        dbName,
+        botName,
+        channelId,
+    });
+
+    if (!hasClientId || !hasClientSecret || !hasRefreshToken) {
+        result.error = 'Missing Cliq OAuth credentials';
+        return result;
+    }
+
+    // Step 2: Get OAuth token
+    let accessToken: string;
+    try {
+        const tokenUrl = 'https://accounts.zoho.in/oauth/v2/token';
+        const body = new URLSearchParams({
+            client_id: env.CLIQ_CLIENT_ID!,
+            client_secret: env.CLIQ_CLIENT_SECRET!,
+            refresh_token: env.CLIQ_REFRESH_TOKEN!,
+            grant_type: 'refresh_token',
+        });
+
+        const tokenRes = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body,
+        });
+
+        const tokenText = await tokenRes.text();
+        const tokenData = JSON.parse(tokenText);
+
+        steps.push({
+            step: '2. OAuth Token Exchange',
+            status: tokenRes.status,
+            hasAccessToken: !!tokenData.access_token,
+            error: tokenData.error ?? null,
+            responsePreview: tokenText.substring(0, 200),
+        });
+
+        if (!tokenData.access_token) {
+            result.error = 'No access_token in OAuth response';
+            return result;
+        }
+        accessToken = tokenData.access_token;
+    } catch (err) {
+        steps.push({ step: '2. OAuth Token Exchange', error: String(err) });
+        result.error = 'OAuth token exchange failed';
+        return result;
+    }
+
+    // Step 3: Query DB — try multiple criteria formats
+    const zohoApiBase = 'https://cliq.zoho.in/api/v2';
+    const criteriaTests = [
+        { label: 'with_parens', criteria: `(github_username==${githubUsername})` },
+        { label: 'without_parens', criteria: `github_username==${githubUsername}` },
+        { label: 'list_all_no_criteria', criteria: '' },
+    ];
+
+    let foundEmail = '';
+    let foundZuid = '';
+
+    for (const test of criteriaTests) {
+        let endpoint: string;
+        if (test.criteria) {
+            endpoint = `${zohoApiBase}/storages/${encodeURIComponent(dbName)}/records?criteria=${encodeURIComponent(test.criteria)}&limit=5`;
+        } else {
+            endpoint = `${zohoApiBase}/storages/${encodeURIComponent(dbName)}/records?limit=10`;
+        }
+
+        try {
+            const dbRes = await fetch(endpoint, {
+                method: 'GET',
+                headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` },
+            });
+
+            const dbText = await dbRes.text();
+            let parsed: Record<string, unknown> = {};
+            try { parsed = JSON.parse(dbText); } catch { /* not JSON */ }
+
+            const records = (parsed.list ?? parsed.data ?? []) as Array<Record<string, unknown>>;
+
+            steps.push({
+                step: `3. DB Query [${test.label}]`,
+                endpoint,
+                status: dbRes.status,
+                recordCount: records.length,
+                records: records.slice(0, 5).map(r => {
+                    const v = (r as { values?: Record<string, unknown> }).values ?? r;
+                    return v;
+                }),
+                rawResponsePreview: dbText.substring(0, 300),
+            });
+
+            // Extract user info from first matching record
+            if (test.criteria && records.length > 0 && !foundEmail) {
+                const first = records[0] as Record<string, unknown>;
+                const values = (first.values ?? first) as Record<string, unknown>;
+                foundEmail = String(values.cliq_email ?? values.email ?? '');
+                foundZuid = String(values.cliq_zuid ?? values.zuid ?? '');
+            }
+        } catch (err) {
+            steps.push({
+                step: `3. DB Query [${test.label}]`,
+                endpoint,
+                error: String(err),
+            });
+        }
+    }
+
+    // Step 4: Construct mention tags
+    let mentionTag: string;
+    let slideMentionTag: string;
+
+    if (foundEmail) {
+        mentionTag = `{@${foundEmail}}`;
+        slideMentionTag = `[${githubUsername}](mail:${foundEmail})`;
+    } else if (foundZuid) {
+        mentionTag = `{@${foundZuid}}`;
+        slideMentionTag = `[${githubUsername}](zohoid:${foundZuid})`;
+    } else {
+        mentionTag = `@${githubUsername}`;
+        slideMentionTag = githubUsername;
+    }
+
+    steps.push({
+        step: '4. Mention Construction',
+        foundEmail,
+        foundZuid,
+        mentionTag,
+        slideMentionTag,
+        willNotifyUser: mentionTag.startsWith('{@'),
+    });
+
+    // Step 5: Post test message
+    const payload = {
+        text: `🧪 DEBUG: ${mentionTag} — mention test for **${githubUsername}**`,
+        card: { title: 'Mention Debug Test', theme: 'modern-inline' },
+        slides: [{
+            type: 'label',
+            data: [
+                { 'Author': slideMentionTag },
+                { 'Test': 'Debug message to verify mention tagging' },
+            ],
+        }],
+        buttons: [{
+            label: 'Dismiss',
+            type: '+',
+            action: { type: 'open.url', data: { web: 'https://github.com' } },
+        }],
+    };
+
+    const safeChannel = encodeURIComponent((channelId).toLowerCase());
+    const encBot = encodeURIComponent(botName);
+    const postEndpoint = `${zohoApiBase}/channelsbyname/${safeChannel}/message?bot_unique_name=${encBot}`;
+
+    try {
+        const postRes = await fetch(postEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Zoho-oauthtoken ${accessToken}`,
+            },
+            body: JSON.stringify(payload),
+        });
+
+        const postText = await postRes.text();
+
+        steps.push({
+            step: '5. Post Message',
+            endpoint: postEndpoint,
+            status: postRes.status,
+            response: postText.substring(0, 300),
+            payloadSent: payload,
+        });
+
+        result.success = postRes.ok;
+    } catch (err) {
+        steps.push({ step: '5. Post Message', error: String(err) });
+        result.success = false;
+    }
+
+    return result;
+}
+
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
         const requestId = extractOrGenerateRequestId(request.headers);
@@ -492,6 +696,26 @@ export default {
                     response = new Response('Method not allowed', { status: 405 });
                 }
             }
+            // — Debug: Cliq Mention Test Endpoint —
+            // GET /debug/cliq-mention?user=Anandhageethank
+            // Tests the full mention flow: OAuth → DB lookup → mention construction → post message
+            // Protected by dashboard auth. Remove this endpoint after debugging.
+            else if (method === 'GET' && pathname === '/debug/cliq-mention') {
+                try {
+                    if (!(await isAuthenticated(request, env))) {
+                        response = createSecureJsonResponse({ error: 'Unauthorized. Login to /dashboard first.' }, 401);
+                    } else {
+                        const debugResult = await debugCliqMention(env, searchParams.get('user') ?? 'Anandhageethank');
+                        response = createSecureJsonResponse(debugResult, 200);
+                    }
+                } catch (error) {
+                    response = createSecureJsonResponse({
+                        error: 'Debug endpoint failed',
+                        detail: error instanceof Error ? error.message : String(error),
+                    }, 500);
+                }
+            }
+
             // — GitHub Webhook Entry Point —
             else if (method === 'POST' && pathname === '/') {
                 try {

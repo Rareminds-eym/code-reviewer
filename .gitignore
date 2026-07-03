@@ -6,6 +6,9 @@ dist/
 .wrangler/
 worker-configuration.d.ts
 
+# Graphify knowledge graph outputs
+graphify-out/
+
 # Environment files
 .dev.vars
 

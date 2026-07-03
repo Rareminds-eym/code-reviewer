@@ -94,11 +94,19 @@ function getFirstRecord(result: CliqDBRecordResponse): Record<string, unknown> |
  * Endpoint: GET /api/v2/storages/{db_name}/records?criteria=github_username=={username}
  * Scope required: ZohoCliq.StorageData.READ
  */
+/**
+ * Resolved Cliq user info: both email and ZUID for flexible mention formats.
+ */
+interface CliqUserInfo {
+    email: string;
+    zuid: string;
+}
+
 async function resolveCliqUser(
     accessToken: string,
     dbName: string,
     githubUsername: string
-): Promise<string | null> {
+): Promise<CliqUserInfo | null> {
     const zohoApiBase = 'https://cliq.zoho.in/api/v2';
     const encDb = encodeURIComponent(dbName);
 
@@ -147,16 +155,23 @@ async function resolveCliqUser(
                 continue;
             }
 
-            // ZUID may be returned as string or number.
+            // Extract both email and ZUID from the record.
+            const rawEmail = record.cliq_email ?? record.email;
+            const cliqEmail = rawEmail !== undefined && rawEmail !== null ? String(rawEmail).trim() : null;
+
             const rawZuid = record.cliq_zuid ?? record.zuid;
-            const cliqZuid = rawZuid !== undefined && rawZuid !== null ? String(rawZuid) : null;
-            if (!cliqZuid || cliqZuid.trim().length === 0) {
-                logger.warn('Cliq DB record missing cliq_zuid field', { githubUsername, dbName, record });
+            const cliqZuid = rawZuid !== undefined && rawZuid !== null ? String(rawZuid).trim() : null;
+
+            if (!cliqEmail && !cliqZuid) {
+                logger.warn('Cliq DB record missing both cliq_email and cliq_zuid', { githubUsername, dbName, record });
                 continue;
             }
 
-            logger.info('Resolved GitHub user to Cliq ZUID', { githubUsername, cliqZuid, criteria });
-            return cliqZuid;
+            logger.info('Resolved GitHub user to Cliq user', { githubUsername, cliqEmail, cliqZuid, criteria });
+            return {
+                email: cliqEmail ?? '',
+                zuid: cliqZuid ?? '',
+            };
         } catch (error) {
             clearTimeout(timeoutId);
             if (error instanceof Error && error.name === 'AbortError') {
@@ -238,13 +253,33 @@ export async function postToCliq(
     let mentionTag = `@${prAuthor}`; // Fallback: plain GitHub username (no Cliq notification)
     let slideMentionTag = prAuthor; // Fallback for slides (plain text, no mention syntax)
     if (dbName) {
-        const cliqZuid = await resolveCliqUser(accessToken, dbName, prAuthor);
-        if (cliqZuid) {
-            // `{@ZUID}` works in the `text` key to notify the user (Cliq REST API v2 Mentions)
-            mentionTag = `{@${cliqZuid}}`;
-            // `[Name](zohoid:ZUID)` works in slides/labels for silent mention rendering
-            // Ref: https://www.zoho.com/cliq/help/restapi/v2/#user-mentions
-            slideMentionTag = `[${prAuthor}](zohoid:${cliqZuid})`;
+        const cliqUser = await resolveCliqUser(accessToken, dbName, prAuthor);
+        if (cliqUser) {
+            // Zoho Cliq REST API v2 Mentions (text key):
+            //   {@email}  — mention by email (most reliable, works even if ZUID format varies)
+            //   {@userid} — mention by ZUID
+            // Ref: https://www.zoho.com/cliq/help/restapi/v2/#Mentioning_a_User
+            // Prefer email-based mention as it's the canonical Zoho identity.
+            if (cliqUser.email) {
+                mentionTag = `{@${cliqUser.email}}`;
+            } else if (cliqUser.zuid) {
+                mentionTag = `{@${cliqUser.zuid}}`;
+            }
+
+            // Silent mention for slides/labels: [Name](mail:email) or [Name](zohoid:zuid)
+            if (cliqUser.email) {
+                slideMentionTag = `[${prAuthor}](mail:${cliqUser.email})`;
+            } else if (cliqUser.zuid) {
+                slideMentionTag = `[${prAuthor}](zohoid:${cliqUser.zuid})`;
+            }
+
+            logger.info('Cliq mention tags constructed', {
+                mentionTag,
+                slideMentionTag,
+                email: cliqUser.email,
+                zuid: cliqUser.zuid,
+                prAuthor,
+            });
         }
     }
 
