@@ -2,7 +2,7 @@
 
 The Code Reviewer Agent natively supports a deep, zero-LLM architecture detection model. However, you can forcibly override its heuristics, append custom prompt validations, or ignore useless file paths by committing a `.codereview.yml` root file directly inside your repository.
 
-When present, the Edge Worker reads this manifest at the start of the `ReviewContainer` Map-Reduce sequence and dynamically adjusts the LLM parameters before expending execution tokens.
+When present, the container-side pipeline reads this manifest at the start of the Map-Reduce sequence and dynamically adjusts the LLM parameters before expending execution tokens.
 
 ## Implementing `.codereview.yml`
 

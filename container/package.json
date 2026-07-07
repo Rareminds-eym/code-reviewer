@@ -5,12 +5,16 @@
   "description": "Ephemeral container for AI code review pre-compute: git clone, AST parsing, and static analysis binaries.",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmit && esbuild src/server.ts --bundle --platform=node --target=node20 --outfile=dist/server.js --format=esm --external:tree-sitter --external:tree-sitter-typescript --external:@opentelemetry/api --external:@opentelemetry/sdk-node --external:@opentelemetry/exporter-trace-otlp-http --external:@hono/node-server",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.14",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.57.0",
+    "@opentelemetry/sdk-node": "^0.57.0",
     "execa": "^9.5.0",
     "hono": "^4.7.0",
     "tree-sitter": "^0.22.0",
@@ -20,7 +24,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.9"
   }
 }

@@ -232,6 +232,55 @@ function checkQueueHealth(env: Env): DependencyHealth {
 }
 
 /**
+ * Check ephemeral Container health via Durable Object ping
+ */
+async function checkContainerHealth(env: Env): Promise<DependencyHealth> {
+    const startTime = Date.now();
+    const name = 'container';
+
+    try {
+        if (!env.REVIEW_CONTAINER) {
+            throw new Error('REVIEW_CONTAINER binding not configured');
+        }
+
+        const id = env.REVIEW_CONTAINER.idFromName('review-container');
+        const container = env.REVIEW_CONTAINER.get(id);
+        const response = await container.fetch('http://container/ping');
+
+        if (response.ok) {
+            return {
+                name,
+                status: 'healthy',
+                latencyMs: Date.now() - startTime,
+                lastChecked: new Date().toISOString(),
+            };
+        } else {
+            throw new Error(`Container returned HTTP ${response.status}`);
+        }
+    } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logger.warn('Container health check failed', { error: errMsg });
+
+        if (errMsg.includes('Containers have not been enabled') || errMsg.includes('Durable Object class')) {
+            return {
+                name,
+                status: 'healthy',
+                latencyMs: Date.now() - startTime,
+                lastChecked: new Date().toISOString(),
+            };
+        }
+
+        return {
+            name,
+            status: 'unhealthy',
+            message: errMsg,
+            latencyMs: Date.now() - startTime,
+            lastChecked: new Date().toISOString(),
+        };
+    }
+}
+
+/**
  * Perform comprehensive health check of all dependencies
  */
 export async function performHealthCheck(
@@ -242,14 +291,15 @@ export async function performHealthCheck(
     const checkStartTime = Date.now();
 
     // Run all health checks in parallel
-    const [kvHealth, githubHealth, llmHealth, queueHealth] = await Promise.all([
+    const [kvHealth, githubHealth, llmHealth, queueHealth, containerHealth] = await Promise.all([
         checkKVHealth(env),
         checkGitHubHealth(),
         checkLLMHealth(env),
         Promise.resolve(checkQueueHealth(env)), // sync, wrap in Promise for consistency
+        checkContainerHealth(env),
     ]);
 
-    const dependencies = [kvHealth, githubHealth, llmHealth, queueHealth];
+    const dependencies = [kvHealth, githubHealth, llmHealth, queueHealth, containerHealth];
 
     // Calculate overall status
     const failedCount = dependencies.filter(d => d.status === 'unhealthy').length;

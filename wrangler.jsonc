@@ -101,10 +101,6 @@
 			{
 				"name": "REVIEW_CONTAINER",
 				"class_name": "ReviewContainer"
-			},
-			{
-				"name": "RATE_LIMITER",
-				"class_name": "RateLimiterDO"
 			}
 		]
 	},

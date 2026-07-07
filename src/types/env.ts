@@ -63,8 +63,6 @@ export interface Env {
   // --- Containers (Durable Object binding) ---
   /** The ReviewContainer DO namespace for dispatching reviews to ephemeral containers */
   REVIEW_CONTAINER: DurableObjectNamespace<import('../container-class').ReviewContainer>;
-  /** The RateLimiter DO namespace for distributed rate limiting */
-  RATE_LIMITER: DurableObjectNamespace;
 
   // --- KV Namespaces (isolated by concern) ---
   /** KV for usage metrics and cost tracking (TTL: 30 days) */

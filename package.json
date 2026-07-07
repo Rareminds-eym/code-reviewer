@@ -9,7 +9,8 @@
 		"start": "DOCKER_API_VERSION=1.44 wrangler dev",
 		"test": "vitest",
 		"cf-typegen": "wrangler types",
-		"usage-report": "tsx scripts/usage-client.ts"
+		"usage-report": "tsx scripts/usage-client.ts",
+		"build:container": "npm run build --prefix container"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.4",

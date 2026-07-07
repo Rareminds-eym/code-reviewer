@@ -9,7 +9,6 @@ export interface ReviewRequest {
 	title: string;
 	prAuthor: string;
 	prDescription?: string;
-	installationToken: string;
 	/** Files allowed to be processed (pre-filtered by Worker .codereview.yml ignores) */
 	allowedFiles: string[];
 	/** Worker-generated request ID for distributed tracing */
@@ -53,12 +52,32 @@ export interface SymbolInfo {
 }
 
 /**
+ * Finding produced by the LLM reviews (Map phase).
+ */
+export interface UnifiedFinding {
+	severity: 'critical' | 'high' | 'medium' | 'low';
+	file: string;
+	line?: number;
+	title: string;
+	issue: string;
+	currentCode?: string;
+	suggestedCode?: string;
+	category: string;
+}
+
+/**
  * Response payload returned by the container to the Worker.
  */
 export interface ReviewResponse {
 	staticFindings: StaticFinding[];
 	blastRadius: BlastRadius;
 	metrics: ReviewMetrics;
+	review?: string;           // LLM-generated review text
+	verdict?: 'approve' | 'comment' | 'request_changes' | 'pending';
+	findings?: UnifiedFinding[];
+	failedChunks?: number;
+	totalChunks?: number;
+	requestId?: string;
 }
 
 export interface ReviewMetrics {
@@ -69,4 +88,5 @@ export interface ReviewMetrics {
 	filesAnalyzed: number;
 	symbolsTracked: number;
 }
+
 

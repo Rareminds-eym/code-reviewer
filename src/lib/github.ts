@@ -100,7 +100,7 @@ export async function fetchChangedFiles(
 
             // Note: cachedGitHubFetch handles the 429 extraction automatically inside cache.ts
             const files = await cachedGitHubFetch<GitHubPRFile[]>(
-                env,
+                env.CACHE_KV,
                 url,
                 { headers: githubHeaders(token) },
                 { ttlSeconds: CACHE_TTLS.PR_FILES, staleWhileRevalidate: false },
@@ -269,7 +269,7 @@ export async function fetchFileContent(rawUrl: string, token: string, env: Env):
 
     const executeFetch = async (): Promise<string | null> => {
         const text = await cachedGitHubFetch<string>(
-            env,
+            env.CACHE_KV,
             rawUrl,
             { headers: githubHeaders(token) },
             { ttlSeconds: CACHE_TTLS.FILE_CONTENT, staleWhileRevalidate: true },

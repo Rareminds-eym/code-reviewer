@@ -4,7 +4,10 @@ FROM node:20-alpine
 RUN apk add --no-cache \
     git \
     python3 \
-    py3-pip
+    py3-pip \
+    make \
+    g++ \
+    build-base
 
 # Install Rust-based fast linters (no node_modules needed, run as standalone binaries)
 RUN npm install -g oxlint @biomejs/biome

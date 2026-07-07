@@ -8,12 +8,69 @@ const GITHUB_API_BASE = 'https://api.github.com';
 // ---------------------------------------------------------------------------
 
 /**
+ * Pure JS utility to wrap PKCS#1 RSA Private Key DER into a PKCS#8 Private Key Info structure.
+ * Required because Web Crypto API (crypto.subtle.importKey) only accepts PKCS#8 format.
+ */
+function convertPkcs1ToPkcs8(pkcs1Der: Uint8Array): Uint8Array {
+    const len = pkcs1Der.length;
+    let header: number[];
+
+    if (len < 128) {
+        header = [
+            0x30, len + 20, // SEQUENCE
+            0x02, 0x01, 0x00, // Version (0)
+            0x30, 0x0d, // AlgorithmIdentifier SEQUENCE
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, // rsaEncryption OID
+            0x05, 0x00, // NULL parameters
+            0x04, len // OCTET STRING
+        ];
+    } else if (len < 256) {
+        header = [
+            0x30, 0x81, len + 21,
+            0x02, 0x01, 0x00,
+            0x30, 0x0d,
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+            0x05, 0x00,
+            0x04, 0x81, len
+        ];
+    } else if (len < 65536) {
+        const lenHi = (len >> 8) & 0xff;
+        const lenLo = len & 0xff;
+        
+        const outerLen = len + 22;
+        const outerLenHi = (outerLen >> 8) & 0xff;
+        const outerLenLo = outerLen & 0xff;
+        
+        header = [
+            0x30, 0x82, outerLenHi, outerLenLo,
+            0x02, 0x01, 0x00,
+            0x30, 0x0d,
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+            0x05, 0x00,
+            0x04, 0x82, lenHi, lenLo
+        ];
+    } else {
+        throw new Error('Key length is too large for PKCS#8 wrapping');
+    }
+
+    const pkcs8Der = new Uint8Array(header.length + len);
+    pkcs8Der.set(header, 0);
+    pkcs8Der.set(pkcs1Der, header.length);
+    return pkcs8Der;
+}
+
+/**
  * Parses a PEM-encoded RSA private key into a CryptoKey suitable for RS256 signing.
  * Works natively in Cloudflare Workers via the Web Crypto API (no Node deps).
+ * Auto-detects and wraps PKCS#1 keys (BEGIN RSA PRIVATE KEY) into PKCS#8 format.
  */
 async function importPrivateKey(pem: string): Promise<CryptoKey> {
+    // Gap 60: Replace literal '\n' sequences from .dev.vars with actual newlines
+    const normalized = pem.replace(/\\n/g, '\n');
+    const isPkcs1 = normalized.includes('-----BEGIN RSA PRIVATE KEY-----');
+
     // Strip PEM armor and whitespace
-    const stripped = pem
+    const stripped = normalized
         .replace(/-----BEGIN RSA PRIVATE KEY-----/g, '')
         .replace(/-----END RSA PRIVATE KEY-----/g, '')
         .replace(/-----BEGIN PRIVATE KEY-----/g, '')
@@ -35,6 +92,16 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
             '[github-auth] GITHUB_APP_PRIVATE_KEY contains invalid Base64. ' +
             'Ensure the PEM key is not truncated or corrupted.'
         );
+    }
+
+    // Task 0l: Wrap PKCS#1 DER to PKCS#8 format if needed
+    if (isPkcs1) {
+        try {
+            binaryDer = convertPkcs1ToPkcs8(binaryDer);
+        } catch (error) {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            throw new Error(`[github-auth] Failed to wrap PKCS#1 key to PKCS#8: ${errMsg}`);
+        }
     }
 
     try {

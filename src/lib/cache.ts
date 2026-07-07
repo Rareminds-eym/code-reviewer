@@ -5,13 +5,19 @@
  * - File contents (TTL: 5 minutes during active review)
  * - PR file listings (TTL: 2 minutes)
  * - User/repo metadata (TTL: 1 hour)
- * 
- * Uses Cloudflare KV for distributed caching across worker instances.
+ * - 
+ * Uses KvCache interface to support both Worker KV bindings and Container proxies.
  */
 
-import type { Env } from '../types/env';
 import { logger } from './logger';
 import { RateLimitError } from './errors';
+
+export interface KvCache {
+    get(key: string): Promise<string | null>;
+    put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+    delete(key: string): Promise<void>;
+    list(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>;
+}
 
 export interface CacheConfig {
     /** Time-to-live in seconds */
@@ -46,7 +52,6 @@ export function generateCacheKey(
     type: 'file' | 'pr-files' | 'repo' | 'user' | 'check-run',
     identifier: string
 ): string {
-    // KV keys have a 512-byte limit. Truncate long identifiers.
     const maxIdentifierLength = 480 - `github:${type}:`.length;
     const safeIdentifier = identifier.length > maxIdentifierLength
         ? identifier.substring(0, maxIdentifierLength)
@@ -68,7 +73,6 @@ export function isCacheFresh<T>(entry: CacheEntry<T>): boolean {
 export function isCacheUsable<T>(entry: CacheEntry<T>, allowStale: boolean = true): boolean {
     if (isCacheFresh(entry)) return true;
     if (allowStale) {
-        // Allow stale data for 10% of the original TTL (grace period)
         const ttl = entry.expiresAt - entry.cachedAt;
         const gracePeriod = Math.floor(ttl * 0.1); // 10% grace period
         return Date.now() < entry.expiresAt + gracePeriod;
@@ -80,18 +84,17 @@ export function isCacheUsable<T>(entry: CacheEntry<T>, allowStale: boolean = tru
  * Get cached data from KV.
  */
 export async function getCachedData<T>(
-    env: Env,
+    cacheKv: KvCache,
     cacheKey: string,
     allowStale: boolean = true
 ): Promise<CacheEntry<T> | null> {
     try {
-        const stored = await env.CACHE_KV.get(cacheKey);
+        const stored = await cacheKv.get(cacheKey);
         if (!stored) return null;
 
         const entry = JSON.parse(stored) as CacheEntry<T>;
 
         if (!isCacheUsable(entry, allowStale)) {
-            // Entry expired and not in grace period
             return null;
         }
 
@@ -107,7 +110,7 @@ export async function getCachedData<T>(
  * Store data in cache.
  */
 export async function setCachedData<T>(
-    env: Env,
+    cacheKv: KvCache,
     cacheKey: string,
     data: T,
     ttlSeconds: number,
@@ -122,14 +125,13 @@ export async function setCachedData<T>(
     };
 
     try {
-        await env.CACHE_KV.put(cacheKey, JSON.stringify(entry), {
+        await cacheKv.put(cacheKey, JSON.stringify(entry), {
             expirationTtl: ttlSeconds * 2, // Store for 2x TTL to enable stale-while-revalidate
         });
 
         logger.debug('Cache stored', { cacheKey, ttlSeconds });
     } catch (error) {
         logger.warn('Cache write error', { cacheKey, error: String(error) });
-        // Non-fatal: continue without caching
     }
 }
 
@@ -137,15 +139,14 @@ export async function setCachedData<T>(
  * Delete cached data (for invalidation).
  */
 export async function invalidateCache(
-    env: Env,
+    cacheKv: KvCache,
     pattern: string
 ): Promise<void> {
     try {
-        // List keys matching pattern and delete them
-        const keys = await env.CACHE_KV.list({ prefix: pattern });
+        const keys = await cacheKv.list({ prefix: pattern });
 
         for (const key of keys.keys) {
-            await env.CACHE_KV.delete(key.name);
+            await cacheKv.delete(key.name);
         }
 
         logger.info('Cache invalidated', { pattern, count: keys.keys.length });
@@ -160,30 +161,26 @@ export async function invalidateCache(
  * Wrapper for GitHub API calls with caching.
  */
 export async function cachedGitHubFetch<T>(
-    env: Env,
+    cacheKv: KvCache,
     url: string,
     init: RequestInit,
     cacheConfig: CacheConfig,
     fetchFn: (url: string, init: RequestInit) => Promise<Response>,
     responseType: 'json' | 'text' = 'json',
-    cacheContext?: string  // Optional context (e.g. headSha) for cache key differentiation
+    cacheContext?: string
 ): Promise<T> {
     const cacheKey = generateCacheKey(
         inferCacheType(url),
         `${init.method || 'GET'}:${url}${cacheContext ? `:${cacheContext}` : ''}`
     );
 
-    // Try cache first
-    const cached = await getCachedData<T>(env, cacheKey, cacheConfig.staleWhileRevalidate);
+    const cached = await getCachedData<T>(cacheKv, cacheKey, cacheConfig.staleWhileRevalidate);
 
     if (cached && isCacheFresh(cached)) {
-        // Fresh cache hit - return immediately
         return cached.data;
     }
 
-    // Cache miss or stale - make the request
     try {
-        // Add conditional request headers if we have an ETag
         const requestInit = { ...init };
         if (cached?.etag) {
             requestInit.headers = {
@@ -194,11 +191,9 @@ export async function cachedGitHubFetch<T>(
 
         const response = await fetchFn(url, requestInit);
 
-        // Handle 304 Not Modified
         if (response.status === 304 && cached) {
             logger.debug('GitHub API 304 Not Modified, using cache', { url });
-            // Refresh cache TTL
-            await setCachedData(env, cacheKey, cached.data, cacheConfig.ttlSeconds, cached.etag);
+            await setCachedData(cacheKv, cacheKey, cached.data, cacheConfig.ttlSeconds, cached.etag);
             return cached.data;
         }
 
@@ -218,18 +213,15 @@ export async function cachedGitHubFetch<T>(
             ? await response.text() as unknown as T
             : await response.json() as T;
 
-        // Store in cache with ETag
         const etag = response.headers.get('ETag') || undefined;
-        await setCachedData(env, cacheKey, data, cacheConfig.ttlSeconds, etag);
+        await setCachedData(cacheKv, cacheKey, data, cacheConfig.ttlSeconds, etag);
 
-        // If we got fresh data but had stale cache, log the revalidation
         if (cached && !isCacheFresh(cached)) {
             logger.debug('Stale cache revalidated', { url });
         }
 
         return data;
     } catch (error) {
-        // On error, try to return stale cache if available
         if (cached && cacheConfig.staleWhileRevalidate) {
             logger.warn('GitHub API failed, using stale cache', { url, error: String(error) });
             return cached.data;
@@ -238,31 +230,22 @@ export async function cachedGitHubFetch<T>(
     }
 }
 
-/**
- * Infer cache type from URL.
- */
 function inferCacheType(url: string): 'file' | 'pr-files' | 'repo' | 'user' | 'check-run' {
     if (url.includes('/contents/')) return 'file';
     if (url.includes('/pulls/') && url.includes('/files')) return 'pr-files';
     if (url.includes('/check-runs')) return 'check-run';
     if (url.includes('/users/')) return 'user';
     if (url.includes('/repos/')) return 'repo';
-    return 'repo'; // Default
+    return 'repo';
 }
 
-/**
- * Cache statistics for monitoring.
- */
 export interface CacheStats {
     totalKeys: number;
     byType: Record<string, number>;
     totalSize: number;
 }
 
-/**
- * Get cache statistics.
- */
-export async function getCacheStats(env: Env): Promise<CacheStats> {
+export async function getCacheStats(cacheKv: KvCache): Promise<CacheStats> {
     const stats: CacheStats = {
         totalKeys: 0,
         byType: {},
@@ -270,7 +253,7 @@ export async function getCacheStats(env: Env): Promise<CacheStats> {
     };
 
     try {
-        const keys = await env.CACHE_KV.list({ prefix: 'github:' });
+        const keys = await cacheKv.list({ prefix: 'github:' });
         stats.totalKeys = keys.keys.length;
 
         for (const key of keys.keys) {
