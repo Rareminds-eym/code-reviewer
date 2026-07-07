@@ -29,8 +29,6 @@
 		"CLIQ_BOT_NAME": "codereviewbot",
 		"CLIQ_CHANNEL_ID": "prweb",
 		"CLIQ_DB_NAME": "githubusermap",
-		"DASHBOARD_USERNAME": "admin",
-		"DASHBOARD_PASSWORD": "admin123",
 		"ENABLE_WEB_SEARCH": "true"
 	},
 	/**
@@ -88,8 +86,8 @@
 		{
 			"class_name": "ReviewContainer",
 			"image": "./container/Dockerfile",
-			"instance_type": "standard-1",
-			"max_instances": 10
+			"instance_type": "standard-2",
+			"max_instances": 3
 		}
 	],
 	/**
@@ -112,10 +110,6 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["ReviewContainer"]
-		},
-		{
-			"tag": "v2",
-			"new_sqlite_classes": ["RateLimiterDO"]
 		}
 	]
 }

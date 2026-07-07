@@ -6,14 +6,14 @@ import type { StaticFinding } from './types.js';
  * Run all static analyzers against the changed files.
  * Each tool runs as a child process and its output is parsed into structured findings.
  */
-export async function runStaticAnalysis(workDir: string, changedFiles: string[]): Promise<StaticFinding[]> {
+export async function runStaticAnalysis(workDir: string, changedFiles: string[], signal?: AbortSignal): Promise<StaticFinding[]> {
 	const findings: StaticFinding[] = [];
 
 	// Run all analyzers in parallel for speed
 	const [oxlintResults, biomeResults, semgrepResults] = await Promise.allSettled([
-		runOxlint(workDir, changedFiles),
-		runBiome(workDir, changedFiles),
-		runSemgrep(workDir, changedFiles),
+		runOxlint(workDir, changedFiles, signal),
+		runBiome(workDir, changedFiles, signal),
+		runSemgrep(workDir, changedFiles, signal),
 	]);
 
 	if (oxlintResults.status === 'fulfilled') findings.push(...oxlintResults.value);
@@ -31,13 +31,14 @@ export async function runStaticAnalysis(workDir: string, changedFiles: string[])
 /**
  * Run oxlint (ESLint-compatible, 100x faster, no node_modules needed).
  */
-async function runOxlint(workDir: string, changedFiles: string[]): Promise<StaticFinding[]> {
+async function runOxlint(workDir: string, changedFiles: string[], signal?: AbortSignal): Promise<StaticFinding[]> {
 	const tsFiles = changedFiles.filter((f) => /\.(ts|tsx|js|jsx)$/.test(f));
 	if (tsFiles.length === 0) return [];
 
 	try {
 		const result = await execa('oxlint', ['--format=json', ...tsFiles.map((f) => join(workDir, f))], {
 			timeout: 30_000,
+			cancelSignal: signal,
 			reject: false, // Don't throw on non-zero exit (lint errors cause exit 1)
 		});
 
@@ -95,13 +96,14 @@ function parseOxlintTextOutput(stdout: string, workDir: string): StaticFinding[]
 /**
  * Run Biome check for lint + format violations.
  */
-async function runBiome(workDir: string, changedFiles: string[]): Promise<StaticFinding[]> {
+async function runBiome(workDir: string, changedFiles: string[], signal?: AbortSignal): Promise<StaticFinding[]> {
 	const tsFiles = changedFiles.filter((f) => /\.(ts|tsx|js|jsx|json)$/.test(f));
 	if (tsFiles.length === 0) return [];
 
 	try {
 		const result = await execa('biome', ['check', '--reporter=json', ...tsFiles.map((f) => join(workDir, f))], {
 			timeout: 30_000,
+			cancelSignal: signal,
 			reject: false,
 		});
 
@@ -137,7 +139,7 @@ function parseBiomeOutput(stdout: string, workDir: string): StaticFinding[] {
 /**
  * Run Semgrep for SAST security scanning.
  */
-async function runSemgrep(workDir: string, changedFiles: string[]): Promise<StaticFinding[]> {
+async function runSemgrep(workDir: string, changedFiles: string[], signal?: AbortSignal): Promise<StaticFinding[]> {
 	const tsFiles = changedFiles.filter((f) => /\.(ts|tsx|js|jsx)$/.test(f));
 	if (tsFiles.length === 0) return [];
 
@@ -147,6 +149,7 @@ async function runSemgrep(workDir: string, changedFiles: string[]): Promise<Stat
 			['scan', '--json', '--config=auto', '--severity=WARNING', '--severity=ERROR', ...tsFiles.map((f) => join(workDir, f))],
 			{
 				timeout: 60_000, // Semgrep can be slow on first run
+				cancelSignal: signal,
 				reject: false,
 				env: {
 					...process.env,

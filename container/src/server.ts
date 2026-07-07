@@ -7,6 +7,7 @@ const app = new Hono();
 
 let isShuttingDown = false;
 let activeRequests = 0;
+let activeController: AbortController | null = null;
 
 // Graceful shutdown tracking middleware
 app.use('*', async (c, next) => {
@@ -48,8 +49,17 @@ app.post('/review', async (c) => {
 	const requestId = request.requestId || `container-${Date.now()}`;
 	console.log(`[${requestId}] Starting review for ${request.repoFullName}#${request.prNumber}`);
 
+	// Abort any active review running in this container instance (same PR)
+	if (activeController) {
+		console.log(`[${requestId}] Newer commit or request received. Aborting active review.`);
+		activeController.abort(new Error('Newer review request received'));
+	}
+
+	const controller = new AbortController();
+	activeController = controller;
+
 	try {
-		const response: ReviewResponse = await runReviewPipeline(request, requestId);
+		const response: ReviewResponse = await runReviewPipeline(request, requestId, controller.signal);
 
 		console.log(`[${requestId}] Review completed in ${Date.now() - startTime}ms`, {
 			staticFindings: response.staticFindings.length,
@@ -65,6 +75,10 @@ app.post('/review', async (c) => {
 			message: errMsg,
 			requestId,
 		}, 500);
+	} finally {
+		if (activeController === controller) {
+			activeController = null;
+		}
 	}
 });
 
@@ -87,7 +101,11 @@ process.on('SIGTERM', () => {
 	isShuttingDown = true;
 	
 	// Close Hono server to stop accepting new connection sockets
-	server.close();
+	server.close(() => {
+		console.log('[ReviewContainer] Server socket closed.');
+	});
+	// Force-close idle keep-alive connections
+	(server as any).closeAllConnections();
 
 	// Wait up to 14 minutes (840s) for active requests to finish (Cloudflare limit: 15 mins)
 	const shutdownTimeout = setTimeout(() => {

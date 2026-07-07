@@ -57,4 +57,20 @@ This task list breaks down the implementation of the Container migration plan in
 - [x] **5a. Migrate Tests**: Move applicable tests to `container/test/` and run `vitest`.
 - [x] **5b. Local Build Test**: Run `npm run build:container` and verify TS compiles cleanly.
 - [x] **5c. Update Docs**: Clean up `ADMIN_ENDPOINTS.md` and `CONFIGURATION.md`.
-- [ ] **5d. Phased Rollout**: Implement 10% traffic split in worker for 48-hour monitoring.
+- [x] **5d. Audit Fixes (Principal Engineer Audit)**:
+  - [x] **Fix Git clone token leak (C1)**: Use `credential.helper` referencing `GITHUB_TOKEN` env var.
+  - [x] **Increase timeout (C2)**: Set `CONTAINER_TIMEOUT_MS` to 12 minutes in `queue.ts`.
+  - [x] **Clean wrangler.jsonc DO migration (C3)**: Set `deleted_classes` for `RateLimiterDO`.
+  - [x] **dashboard secret management (C4)**: Remove plaintext login credentials from `vars`.
+  - [x] **Propagate AbortSignal (C5)**: Forward abort signal in `queue.ts` to `container.fetch`.
+  - [x] **Idempotency Guard (C6)**: Cache and check completion state in `DEDUP_KV`.
+  - [x] **Type safety constructor (C7)**: Type constructor parameters in `container-class.ts`.
+  - [x] **SIGTERM HTTP connection closing (H1)**: Call `server.closeAllConnections()`.
+  - [x] **Instance type sizing (H2)**: Set to `standard-2` in `wrangler.jsonc`.
+  - [x] **KV proxy retry (H3)**: Implement `fetch` retry in `kv-proxy.ts`.
+  - [x] **Inactivity timeout (H4)**: Increase container sleep timeout to 15m.
+  - [x] **Reaper dependency (M1)**: Fix `@octokit/rest` missing dependency in reaper script.
+  - [x] **Stale reviews cancellation (H5)**: Track active review controller in server and abort when new commit pushed.
+- [ ] **5e. Phased Rollout**: Implement 10% traffic split in worker for 48-hour monitoring:
+  - Run `npx wrangler versions upload` to upload the new containerized version.
+  - Run `npx wrangler versions deploy <new-version-id>@10% <current-version-id>@90%` to route 10% of traffic.

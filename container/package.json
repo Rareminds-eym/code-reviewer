@@ -5,7 +5,7 @@
   "description": "Ephemeral container for AI code review pre-compute: git clone, AST parsing, and static analysis binaries.",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && esbuild src/server.ts --bundle --platform=node --target=node20 --outfile=dist/server.js --format=esm --external:tree-sitter --external:tree-sitter-typescript --external:@opentelemetry/api --external:@opentelemetry/sdk-node --external:@opentelemetry/exporter-trace-otlp-http --external:@hono/node-server",
+    "build": "tsc --noEmit && esbuild src/server.ts --bundle --platform=node --target=node20 --outfile=dist/server.js --format=esm --packages=external",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run"

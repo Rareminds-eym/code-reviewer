@@ -12,7 +12,7 @@ import type { Env } from './types/env';
  *
  * The actual review logic lives in the `container/` directory as a separate Node.js app.
  */
-export class ReviewContainer extends Container {
+export class ReviewContainer extends Container<any> {
 	/** The HTTP port the container's Hono server listens on. */
 	defaultPort = 3000;
 
@@ -21,7 +21,7 @@ export class ReviewContainer extends Container {
 	 * This saves cost while keeping the container warm for burst PR activity.
 	 * On next request, the container wakes in ~1-3 seconds.
 	 */
-	sleepAfter = '5m';
+	sleepAfter = '15m';
 
 	/**
 	 * MUST be true. The container needs outbound internet for:
@@ -33,7 +33,7 @@ export class ReviewContainer extends Container {
 	/** Map secrets to container envVars in constructor */
 	envVars: Record<string, string>;
 
-	constructor(ctx: any, env: any) {
+	constructor(ctx: DurableObjectState<any>, env: Env) {
 		super(ctx, env);
 		this.envVars = {
 			ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY || '',

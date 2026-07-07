@@ -6,7 +6,7 @@ import { getInstallationToken } from '../lib/github-auth';
 import { updateCheckRun, postPRComment } from '../lib/github';
 import { postToCliq } from '../lib/cliq';
 
-const CONTAINER_TIMEOUT_MS = 240_000; // 4 minutes
+const CONTAINER_TIMEOUT_MS = 12 * 60 * 1000; // 12 minutes
 
 /**
  * Wraps an async function with a timeout guard.
@@ -140,11 +140,12 @@ async function processMessage(
 		const container = getContainer(env.REVIEW_CONTAINER, `pr-${repoFullName.replace('/', '-')}-${prNumber}`);
 
 		const response = await withTimeout(
-			async () => {
+			async (signal) => {
 				return container.fetch(
 					new Request('http://container/review', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
+						signal,
 						body: JSON.stringify({
 							repoFullName,
 							prNumber,

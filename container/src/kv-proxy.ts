@@ -6,8 +6,24 @@
 export class KvProxy {
   constructor(private readonly namespaceName: string) {}
 
+  private async fetchWithRetry(url: string, init?: RequestInit, retries = 2): Promise<Response> {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await fetch(url, init);
+        // Retry on 5xx or network errors. Keep-alive issues can cause socket drops.
+        if (res.ok || res.status === 404 || i === retries) return res;
+        console.warn(`[KvProxy] Fetch failed with status ${res.status}, retrying...`);
+      } catch (err) {
+        if (i === retries) throw err;
+        console.warn(`[KvProxy] Fetch encountered error, retrying...`, err);
+      }
+      await new Promise(r => setTimeout(r, 100 * (i + 1)));
+    }
+    throw new Error('KvProxy request failed after retries');
+  }
+
   async get<T = string>(key: string, type?: 'text' | 'json'): Promise<T | null> {
-    const res = await fetch(`http://kv.internal/${this.namespaceName}/get?key=${encodeURIComponent(key)}`);
+    const res = await this.fetchWithRetry(`http://kv.internal/${this.namespaceName}/get?key=${encodeURIComponent(key)}`);
     if (res.status === 404) return null;
     if (!res.ok) {
       throw new Error(`KV Proxy GET failed for ${this.namespaceName}/${key}: ${res.status} ${await res.text()}`);
@@ -27,7 +43,7 @@ export class KvProxy {
   async put(key: string, value: string, options?: { expirationTtl?: number; metadata?: any }): Promise<void> {
     const ttl = options?.expirationTtl ?? 0;
     const url = `http://kv.internal/${this.namespaceName}/put?key=${encodeURIComponent(key)}${ttl ? `&ttl=${ttl}` : ''}`;
-    const res = await fetch(url, {
+    const res = await this.fetchWithRetry(url, {
       method: 'POST',
       body: value,
     });
@@ -37,7 +53,7 @@ export class KvProxy {
   }
 
   async delete(key: string): Promise<void> {
-    const res = await fetch(`http://kv.internal/${this.namespaceName}/delete?key=${encodeURIComponent(key)}`, {
+    const res = await this.fetchWithRetry(`http://kv.internal/${this.namespaceName}/delete?key=${encodeURIComponent(key)}`, {
       method: 'POST',
     });
     if (!res.ok) {
@@ -52,7 +68,7 @@ export class KvProxy {
     if (options?.cursor) params.append('cursor', options.cursor);
     const query = params.toString() ? `?${params.toString()}` : '';
     
-    const res = await fetch(`http://kv.internal/${this.namespaceName}/list${query}`);
+    const res = await this.fetchWithRetry(`http://kv.internal/${this.namespaceName}/list${query}`);
     if (!res.ok) {
       throw new Error(`KV Proxy LIST failed for ${this.namespaceName}: ${res.status} ${await res.text()}`);
     }

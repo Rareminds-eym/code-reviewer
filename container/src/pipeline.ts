@@ -171,15 +171,28 @@ async function processWithConcurrency<T, R>(
 }
 
 /**
- * Wraps an async function with a timeout guard.
+ * Wraps an async function with a timeout guard and supports propagation of a parent AbortSignal.
  */
 async function withTimeout<T>(
 	fn: (signal: AbortSignal) => Promise<T>,
 	timeoutMs: number,
-	label: string
+	label: string,
+	parentSignal?: AbortSignal
 ): Promise<T> {
+	if (parentSignal?.aborted) {
+		throw new Error(`${label} aborted before starting: ${parentSignal.reason || 'parent signal aborted'}`);
+	}
+
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+	let onAbort: (() => void) | undefined;
+	if (parentSignal) {
+		onAbort = () => {
+			controller.abort(parentSignal.reason || new Error('Parent signal aborted'));
+		};
+		parentSignal.addEventListener('abort', onAbort);
+	}
 
 	try {
 		const result = await Promise.race([
@@ -188,11 +201,19 @@ async function withTimeout<T>(
 				controller.signal.addEventListener('abort', () =>
 					reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`))
 				);
+				if (parentSignal) {
+					parentSignal.addEventListener('abort', () =>
+						reject(new Error(`${label} aborted: ${parentSignal.reason || 'parent signal aborted'}`))
+					);
+				}
 			}),
 		]);
 		return result;
 	} finally {
 		clearTimeout(timer);
+		if (parentSignal && onAbort) {
+			parentSignal.removeEventListener('abort', onAbort);
+		}
 	}
 }
 
@@ -208,7 +229,8 @@ async function withTimeout<T>(
  */
 export async function runReviewPipeline(
 	request: ReviewRequest,
-	requestId: string
+	requestId: string,
+	signal?: AbortSignal
 ): Promise<ReviewResponse> {
 	// ── Step 0: Validate Env & Setup Mock Env ──
 	validateEnvironment();
@@ -236,6 +258,32 @@ export async function runReviewPipeline(
 		CLIQ_CHANNEL_ID: process.env.CLIQ_CHANNEL_ID || '',
 		CLIQ_DB_NAME: process.env.CLIQ_DB_NAME || '',
 	};
+
+	// ── Step 0.1: Idempotency Guard ──
+	const dedupKey = `review_completed:${request.repoFullName}:${request.prNumber}:${request.headSha}`;
+	const isAlreadyCompleted = await env.DEDUP_KV.get(dedupKey).catch(e => {
+		console.warn('Failed to check completion key (non-fatal):', e);
+		return null;
+	});
+	if (isAlreadyCompleted === 'true') {
+		console.log(`[${requestId}] PR review already completed for ${request.repoFullName}#${request.prNumber} at ${request.headSha}. Skipping.`);
+		return {
+			staticFindings: [],
+			blastRadius: { changedFiles: [], impactedFiles: [], changedSymbols: [], impactedSymbols: [] },
+			metrics: {
+				cloneTimeMs: 0,
+				parseTimeMs: 0,
+				staticAnalysisTimeMs: 0,
+				totalTimeMs: 0,
+				filesAnalyzed: 0,
+				symbolsTracked: 0,
+			},
+		};
+	}
+
+	if (signal?.aborted) {
+		throw new Error(`Review aborted: ${signal.reason || 'parent signal aborted'}`);
+	}
 
 	// ── Step 0.5: Initialize Tracing ──
 	await initializeTracing(env);
@@ -332,7 +380,7 @@ export async function runReviewPipeline(
 		console.log(`[${requestId}] Shallow cloning repository into isolated sandbox...`);
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '📦 Cloning repository into isolated sandbox...');
 		const cloneStart = Date.now();
-		await cloneRepository(request.repoFullName, request.headSha, token, workDir);
+		await cloneRepository(request.repoFullName, request.headSha, token, workDir, signal);
 		metrics.cloneTimeMs = Date.now() - cloneStart;
 		console.log(`[${requestId}] Clone completed in ${metrics.cloneTimeMs}ms`);
 
@@ -347,7 +395,7 @@ export async function runReviewPipeline(
 		console.log(`[${requestId}] Running security & linting tools...`);
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🛡️ Executing Ground-Truth Security & Linting Tools...');
 		const staticStart = Date.now();
-		const staticFindings = await runStaticAnalysis(workDir, allowedFiles);
+		const staticFindings = await runStaticAnalysis(workDir, allowedFiles, signal);
 		metrics.staticAnalysisTimeMs = Date.now() - staticStart;
 		console.log(`[${requestId}] Static analysis done in ${metrics.staticAnalysisTimeMs}ms — ${staticFindings.length} findings`);
 
@@ -412,18 +460,19 @@ export async function runReviewPipeline(
 
 				try {
 					const result = await withTimeout(
-						(signal) => callChunkReview(
+						(sig) => callChunkReview(
 							prContext + chunkContent,
 							request.title,
 							chunkLabel,
 							env,
-							signal,
+							sig,
 							chunkSystemPrompt,
 							reviewableFiles,
 							webSearchActive
 						),
 						LLM_TIMEOUT_MS,
-						`Chunk ${chunkLabel}`
+						`Chunk ${chunkLabel}`,
+						signal
 					);
 					return { result, chunkLabel, chunkContent };
 				} catch (primaryError) {
@@ -440,18 +489,19 @@ export async function runReviewPipeline(
 
 							try {
 								const result = await withTimeout(
-									(signal) => callChunkReview(
+									(sig) => callChunkReview(
 										prContext + chunkContent,
 										request.title,
 										chunkLabel,
 										fallbackEnv,
-										signal,
+										sig,
 										chunkSystemPrompt,
 										reviewableFiles,
 										webSearchActive
 									),
 									LLM_TIMEOUT_MS,
-									`Chunk ${chunkLabel} (fallback:${altProvider})`
+									`Chunk ${chunkLabel} (fallback:${altProvider})`,
+									signal
 								);
 								return { result, chunkLabel, chunkContent };
 							} catch (fallbackError) {
@@ -552,11 +602,12 @@ export async function runReviewPipeline(
 				const synthesizerSystemPrompt = composeSynthesizerPrompt(activeProfile, webSearchActive, synthPreviousContext);
 
 				const result = await withTimeout(
-					(signal) => callSynthesizer(
-						synthesizerPayload, env, signal, synthesizerSystemPrompt, dynamicMaxTokens, webSearchActive
+					(sig) => callSynthesizer(
+						synthesizerPayload, env, sig, synthesizerSystemPrompt, dynamicMaxTokens, webSearchActive
 					),
 					LLM_TIMEOUT_MS,
-					'Synthesizer'
+					'Synthesizer',
+					signal
 				);
 				finalReview = result.review;
 				llmCalls.push({
@@ -716,6 +767,12 @@ export async function runReviewPipeline(
 				console.warn('Failed to record usage metrics (non-fatal):', err);
 			}
 		}
+
+		// Mark review as completed to prevent duplicate reviews on retries
+		const completionKey = `review_completed:${request.repoFullName}:${request.prNumber}:${request.headSha}`;
+		await env.DEDUP_KV.put(completionKey, 'true', { expirationTtl: 86400 }).catch(e => {
+			console.warn('Failed to store completion key (non-fatal):', e);
+		});
 
 		return {
 			staticFindings,
