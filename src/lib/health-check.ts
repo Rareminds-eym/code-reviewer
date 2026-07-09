@@ -153,8 +153,8 @@ async function checkLLMHealth(env: Env): Promise<DependencyHealth> {
             }
 
             const response = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
-                { method: 'GET' }
+                'https://generativelanguage.googleapis.com/v1beta/models',
+                { method: 'GET', headers: { 'x-goog-api-key': apiKey } }
             );
 
             // Always consume response body to prevent socket/connection leaks

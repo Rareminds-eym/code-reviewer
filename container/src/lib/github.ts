@@ -336,8 +336,7 @@ export async function fetchFileContent(rawUrl: string, token: string, env: Env):
  * even if it only sees a subset of the files.
  */
 export function buildGlobalContext(
-    classified: ClassifiedFiles,
-    importGraph?: Map<string, string[]>
+    classified: ClassifiedFiles
 ): string {
     const { tier1, tier2, skipped } = classified;
     const allReviewable = [...tier1, ...tier2];
@@ -359,16 +358,6 @@ export function buildGlobalContext(
     if (skipped.length > 0) {
         const preview = skipped.slice(0, 15).join(', ');
         ctx += `\n> _Skipped (noise):_ ${preview}${skipped.length > 15 ? ` ... +${skipped.length - 15} more` : ''}\n`;
-    }
-
-    // Import dependency graph — gives the LLM cross-file awareness
-    if (importGraph && importGraph.size > 0) {
-        ctx += `\n## Import Dependencies (files in this PR)\n\n`;
-        for (const [file, imports] of importGraph) {
-            if (imports.length > 0) {
-                ctx += `- \`${file}\` imports from: ${imports.map(i => `\`${i}\``).join(', ')}\n`;
-            }
-        }
     }
 
     ctx += `\n---\n\n`;
@@ -646,9 +635,7 @@ export async function buildReviewChunks(
 ): Promise<ReviewChunksResult> {
     const { tier1, tier2, skipped } = classified;
 
-    // Provide empty map for fallback pipeline (AST context mapping runs in container now)
-    const importGraph = new Map<string, string[]>();
-    let globalContext = buildGlobalContext(classified, importGraph);
+    let globalContext = buildGlobalContext(classified);
     if (containerBlastRadiusText) {
         globalContext += containerBlastRadiusText;
     }

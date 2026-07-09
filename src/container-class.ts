@@ -17,11 +17,11 @@ export class ReviewContainer extends Container<any> {
 	defaultPort = 3000;
 
 	/**
-	 * Sleep the container after 5 minutes of inactivity.
-	 * This saves cost while keeping the container warm for burst PR activity.
-	 * On next request, the container wakes in ~1-3 seconds.
+	 * Sleep the container after 2 minutes of inactivity.
+	 * Cold starts are ~1-3 seconds, so 2m idle is more than enough
+	 * for burst scenarios while freeing resources quickly.
 	 */
-	sleepAfter = '15m';
+	sleepAfter = '2m';
 
 	/**
 	 * MUST be true. The container needs outbound internet for:
@@ -35,6 +35,7 @@ export class ReviewContainer extends Container<any> {
 
 	constructor(ctx: DurableObjectState<any>, env: Env) {
 		super(ctx, env);
+		console.log(`[container-class-debug] Constructor: AI_PROVIDER='${env.AI_PROVIDER}' ANTHROPIC_KEY_PRESENT=${!!env.ANTHROPIC_API_KEY} GEMINI_KEY_PRESENT=${!!env.GEMINI_API_KEY}`);
 		this.envVars = {
 			ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY || '',
 			GEMINI_API_KEY: env.GEMINI_API_KEY || '',
@@ -72,6 +73,16 @@ export class ReviewContainer extends Container<any> {
 	override onError(error: unknown): void {
 		console.error('[ReviewContainer] Container instance error', error);
 		throw error; // Re-throw so the caller sees the failure
+	}
+
+	/**
+	 * Callable RPC: shut down the container immediately after a zero-work (dedup) review.
+	 * Prevents the 3-minute alarm loop from continuing to fire.
+	 * Called from queue.ts when responseBody.metrics.totalTimeMs === 0.
+	 */
+	async stopAfterReview(): Promise<void> {
+		console.log('[ReviewContainer] stopAfterReview called — shutting down immediately');
+		await this.stop();
 	}
 }
 

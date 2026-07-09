@@ -72,7 +72,11 @@ export const TOKEN_PRICING: Record<string, { inputPer1M: number; outputPer1M: nu
         inputPer1M: 3.00,   // $3 per 1M input tokens
         outputPer1M: 15.00, // $15 per 1M output tokens
     },
-    // Legacy Claude 3.5 models
+    // Claude Sonnet 4 (2025-05-14) — used by dual-agent Stage 1
+    'claude-sonnet-4-20250514': {
+        inputPer1M: 3.00,
+        outputPer1M: 15.00,
+    },
     'claude-3-5-haiku': {
         inputPer1M: 0.80,
         outputPer1M: 4.00,
@@ -90,7 +94,6 @@ export const TOKEN_PRICING: Record<string, { inputPer1M: number; outputPer1M: nu
         inputPer1M: 1.25,   // $1.25 per 1M input tokens
         outputPer1M: 10.00, // $10 per 1M output tokens
     },
-    // Legacy Gemini models
     'gemini-1.5-flash': {
         inputPer1M: 0.075,  // $0.075 per 1M input tokens
         outputPer1M: 0.30,  // $0.30 per 1M output tokens

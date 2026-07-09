@@ -19,7 +19,7 @@ WHEN TO SEARCH:
 - When you see library imports — check if the API usage matches CURRENT documentation.
 - When you see dependency versions — check for known CVEs or security advisories.
 - When you see framework patterns — verify against latest best practices and migration guides.
-- When you see deprecated API usage — confirm deprecation status and suggest current alternatives.
+- When you see deprecated API usage — confirm deprecation status.
 - When you see security-sensitive code (crypto, auth, sessions) — check for known vulnerability patterns.
 
 SEARCH GUIDELINES:

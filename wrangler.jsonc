@@ -87,7 +87,7 @@
 			"class_name": "ReviewContainer",
 			"image": "./container/Dockerfile",
 			"instance_type": "standard-2",
-			"max_instances": 3
+			"max_instances": 10
 		}
 	],
 	/**
@@ -110,6 +110,82 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["ReviewContainer"]
+		},
+		{
+			"tag": "v2",
+			"new_classes": ["RateLimiterDO"]
+		},
+		{
+			"tag": "v3",
+			"deleted_classes": ["RateLimiterDO"]
 		}
-	]
+	],
+	/**
+	 * Multi-Environment Configuration
+	 * Deploy using: npx wrangler deploy --env dev
+	 * Remember to create bindings and set secrets for the dev environment.
+	 */
+	"env": {
+		"dev": {
+			"name": "code-reviewer-dev",
+			"vars": {
+				"AI_PROVIDER": "claude",
+				"ALLOWED_TARGET_BRANCHES": "dev",
+				"CLIQ_BOT_NAME": "codereviewbot-dev",
+				"CLIQ_CHANNEL_ID": "prweb-dev",
+				"CLIQ_DB_NAME": "githubusermap-dev",
+				"ENABLE_WEB_SEARCH": "true"
+			},
+			"queues": {
+				"producers": [
+					{
+						"binding": "REVIEW_QUEUE",
+						"queue": "code-reviewer-queue-dev"
+					}
+				],
+				"consumers": [
+					{
+						"queue": "code-reviewer-queue-dev",
+						"max_batch_size": 1,
+						"max_concurrency": 2,
+						"max_retries": 2
+					}
+				]
+			},
+			"kv_namespaces": [
+				{
+					"binding": "USAGE_METRICS",
+					"id": "1698dbe950604758b2ed4839bcd56a5e"
+				},
+				{
+					"binding": "AUTH_KV",
+					"id": "f976db7cdf154dcb89082bdf993f26f5"
+				},
+				{
+					"binding": "CACHE_KV",
+					"id": "0533a77b4a3841e7beb5ced6e7d5a42f"
+				},
+				{
+					"binding": "DEDUP_KV",
+					"id": "42b79bc174c04323bde728942c0cf200"
+				}
+			],
+			"containers": [
+				{
+					"class_name": "ReviewContainer",
+					"image": "./container/Dockerfile",
+					"instance_type": "standard-2",
+					"max_instances": 3
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "REVIEW_CONTAINER",
+						"class_name": "ReviewContainer"
+					}
+				]
+			}
+		}
+	}
 }

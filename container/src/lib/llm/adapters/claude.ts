@@ -5,8 +5,6 @@ import { handleLLMErrorResponse } from '../error-handler';
 import type { TokenUsage } from '../../../types/usage';
 import { DistributedRateLimiter } from '../distributed-rate-limiter';
 import { CostCircuitBreaker } from '../../cost-circuit-breaker';
-import { retryWithBackoff } from '../../retry-with-backoff';
-import type { Env } from '../../../types/env';
 import {
     extractClaudeSearchMetadata,
     extractClaudeTextContent,
@@ -177,6 +175,7 @@ Analyze this code chunk for issues. Return findings as JSON array.`;
             logger.debug('Claude web search enabled for chunk review', { chunkLabel });
         }
 
+        console.log(`[claude-debug] reviewChunk: model='${this.model}' apiKeyPresent=${!!this.config.apiKey} len=${this.config.apiKey.length}`);
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -194,6 +193,7 @@ Analyze this code chunk for issues. Return findings as JSON array.`;
             }),
             signal,
         });
+        console.log(`[claude-debug] reviewChunk response: status=${response.status} ok=${response.ok}`);
 
         if (!response.ok) {
             // Report error to rate limiter for adaptive adjustment
@@ -462,6 +462,7 @@ ${payload}`;
             logger.debug('Claude web search enabled for synthesis');
         }
 
+        console.log(`[claude-debug] synthesize: model='${this.model}' apiKeyPresent=${!!this.config.apiKey} len=${this.config.apiKey.length}`);
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -479,6 +480,7 @@ ${payload}`;
             }),
             signal,
         });
+        console.log(`[claude-debug] synthesize response: status=${response.status} ok=${response.ok}`);
 
         if (!response.ok) {
             // Report error to rate limiter for adaptive adjustment

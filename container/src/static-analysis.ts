@@ -1,5 +1,6 @@
 import { execa } from 'execa';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { StaticFinding } from './types.js';
 
 /**
@@ -8,12 +9,15 @@ import type { StaticFinding } from './types.js';
  */
 export async function runStaticAnalysis(workDir: string, changedFiles: string[], signal?: AbortSignal): Promise<StaticFinding[]> {
 	const findings: StaticFinding[] = [];
+	const existingFiles = changedFiles.filter((f) => existsSync(join(workDir, f)));
+
+	if (existingFiles.length === 0) return [];
 
 	// Run all analyzers in parallel for speed
 	const [oxlintResults, biomeResults, semgrepResults] = await Promise.allSettled([
-		runOxlint(workDir, changedFiles, signal),
-		runBiome(workDir, changedFiles, signal),
-		runSemgrep(workDir, changedFiles, signal),
+		runOxlint(workDir, existingFiles, signal),
+		runBiome(workDir, existingFiles, signal),
+		runSemgrep(workDir, existingFiles, signal),
 	]);
 
 	if (oxlintResults.status === 'fulfilled') findings.push(...oxlintResults.value);

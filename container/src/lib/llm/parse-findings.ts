@@ -181,9 +181,6 @@ function validateFinding(item: unknown): ReviewFinding | null {
     if (typeof obj.currentCode === 'string' && obj.currentCode.length > 0) {
         finding.currentCode = obj.currentCode.slice(0, 2000);
     }
-    if (typeof obj.suggestedCode === 'string' && obj.suggestedCode.length > 0) {
-        finding.suggestedCode = obj.suggestedCode.slice(0, 2000);
-    }
 
     return finding;
 }

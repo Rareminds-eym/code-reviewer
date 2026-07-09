@@ -5,7 +5,6 @@ import { handleLLMErrorResponse } from '../error-handler';
 import type { TokenUsage } from '../../../types/usage';
 import { DistributedRateLimiter } from '../distributed-rate-limiter';
 import { CostCircuitBreaker } from '../../cost-circuit-breaker';
-import type { Env } from '../../../types/env';
 import { extractGeminiGroundingMetadata, type GeminiGroundingMetadata, SEARCH_TOKEN_BUDGET_MULTIPLIER } from '../../web-search';
 
 /**
@@ -156,6 +155,7 @@ Analyze this code chunk for issues. Return findings as JSON array.`;
         }
 
         // Use x-goog-api-key header instead of URL query param to avoid key in logs
+        console.log(`[gemini-debug] reviewChunk: model='${this.model}' apiKeyPresent=${!!this.config.apiKey} len=${this.config.apiKey.length}`);
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,
             {
@@ -168,6 +168,7 @@ Analyze this code chunk for issues. Return findings as JSON array.`;
                 signal,
             }
         );
+        console.log(`[gemini-debug] reviewChunk response: status=${response.status} ok=${response.ok}`);
 
         if (!response.ok) {
             // Report error to rate limiter for adaptive adjustment
@@ -310,6 +311,7 @@ ${payload}`;
             logger.debug('Gemini web search grounding enabled for synthesis');
         }
 
+        console.log(`[gemini-debug] synthesize: model='${this.model}' apiKeyPresent=${!!this.config.apiKey} len=${this.config.apiKey.length}`);
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,
             {
@@ -322,6 +324,7 @@ ${payload}`;
                 signal,
             }
         );
+        console.log(`[gemini-debug] synthesize response: status=${response.status} ok=${response.ok}`);
 
         if (!response.ok) {
             // Report error to rate limiter for adaptive adjustment

@@ -5,7 +5,6 @@ import { handleLLMErrorResponse } from '../error-handler';
 import type { TokenUsage } from '../../../types/usage';
 import { DistributedRateLimiter } from '../distributed-rate-limiter';
 import { CostCircuitBreaker } from '../../cost-circuit-breaker';
-import type { Env } from '../../../types/env';
 import { extractGeminiGroundingMetadata, type GeminiGroundingMetadata, SEARCH_TOKEN_BUDGET_MULTIPLIER } from '../../web-search';
 
 /**

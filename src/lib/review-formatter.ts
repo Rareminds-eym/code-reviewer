@@ -203,9 +203,6 @@ export function formatFindingsAsMarkdown(
                     if (finding.currentCode) {
                         sections.push(`**Current:**\n\`\`\`\n${finding.currentCode}\n\`\`\`\n`);
                     }
-                    if (finding.suggestedCode) {
-                        sections.push(`**Suggested:**\n\`\`\`\n${finding.suggestedCode}\n\`\`\`\n`);
-                    }
                 } else {
                     sections.push(
                         `* **File: \`${finding.file}\`${finding.line ? `:${finding.line}` : ''}** — **${finding.title}**: ${finding.issue}${simNote ? ` *(> ${simNote.replace(/^> /, '')})*` : ''}`

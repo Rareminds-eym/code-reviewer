@@ -64,10 +64,8 @@ export interface ReviewFinding {
     title: string;
     /** One sentence describing the problem */
     issue: string;
-    /** The problematic code snippet */
+    /** The problematic code snippet (for context) */
     currentCode?: string;
-    /** The corrected code snippet */
-    suggestedCode?: string;
     /** Domain category for grouping */
     category: FindingCategory;
 }

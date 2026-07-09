@@ -45,7 +45,6 @@ describe('formatFindingsAsMarkdown', () => {
                 title: 'Missing error boundary',
                 issue: 'Main component lacks error boundary.',
                 currentCode: '<App />',
-                suggestedCode: '<ErrorBoundary><App /></ErrorBoundary>',
             }),
             makeFinding({
                 file: 'src/utils.ts',

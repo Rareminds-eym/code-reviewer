@@ -8,6 +8,7 @@ Complete guide to the Industrial-Grade Code Reviewer system.
 1. **[README.md](./README.md)** - Overview, architecture, and quick start
 2. **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** - Step-by-step deployment procedures
 3. **[ADMIN_ENDPOINTS.md](./ADMIN_ENDPOINTS.md)** - API reference for monitoring
+4. **[DEV_OPERATIONS_MANUAL.md](./DEV_OPERATIONS_MANUAL.md)** - Developer setups, local testing, and sandbox configurations
 
 ## 🛠️ Operations
 

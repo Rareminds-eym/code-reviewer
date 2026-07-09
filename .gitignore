@@ -10,7 +10,7 @@ worker-configuration.d.ts
 graphify-out/
 
 # Environment files
-.dev.vars
+.dev.vars*
 
 # IDE
 .vscode/

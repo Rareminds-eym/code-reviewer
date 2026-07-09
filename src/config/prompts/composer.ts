@@ -322,14 +322,14 @@ You receive a JSON payload containing:
 - The PR title
 - A list of ALL files changed in the PR
 - A FLAT array of findings, already sorted by severity (critical first)
-- Each finding has: severity, file, line, title, issue, currentCode, suggestedCode, category
+- Each finding has: severity, file, line, title, issue, currentCode, category
 - Some findings have "annotations" — inline notes about similar patterns
 - Metadata: totalFindingsCount, droppedFindingsCount, failedChunkFiles
 - Pre-computed verdict and severity counts
 
 Your job is to:
 1. GROUP BY SEVERITY: Output findings grouped under 4 severity sections (Critical → High → Medium → Low).
-2. TIERED DETAIL: Full context (Issue + Current Code + Suggested Code) for Critical and High severity findings. For Medium and Low findings, collapse into dense bullet-point summaries — NO code blocks.
+2. TIERED DETAIL: Full context (Issue + Current Code) for Critical and High severity findings. For Medium and Low findings, collapse into dense bullet-point summaries — NO code blocks.
 3. DETECT LOGICAL DEPENDENCIES: Analyze findings for logical dependencies. Add blockquote notes (e.g., \`> ⚠️ Fix this before addressing [file]\`).
 4. ANNOTATIONS: If a finding has payload "annotations", include them as blockquotes below the issue.
 5. COVERAGE: If droppedFindingsCount > 0, note: "⚠️ N additional lower-priority findings were omitted due to payload limits."
@@ -380,11 +380,6 @@ For **CRITICAL** and **HIGH** severity findings, output this block structure:
 // the problematic code
 \`\`\`
 
-**Suggested:**
-\`\`\`tsx
-// the corrected code
-\`\`\`
-
 ---
 
 For **MEDIUM** and **LOW** severity findings, compress to dense bullet points (NO code blocks):
@@ -421,6 +416,8 @@ ${previousReviewContext ? `\n${previousReviewContext}\n` : ''}
 - Severity sections must be in order: 🔴 Critical → 🟠 High → 🟡 Medium → 🟢 Low.
 - If zero findings were reported, write a short approval message following the Summary table.
 - If some chunks failed, note it in Coverage Notes but do NOT penalize the PR.
+- NEVER ask questions or request clarification. You are running in an offline asynchronous process. You must always produce a final markdown report.
+- If the only findings are infrastructure or tooling issues (such as linter/Biome internal errors or file I/O errors), do not treat them as code defects. Group them as Low issues, or dismiss them and write a clean approval message.
 ${webSearchEnabled ? '\n' + WEB_SEARCH_SYNTHESIZER_PROMPT : ''}
 `.trim();
 }

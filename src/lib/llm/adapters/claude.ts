@@ -5,8 +5,6 @@ import { handleLLMErrorResponse } from '../error-handler';
 import type { TokenUsage } from '../../../types/usage';
 import { DistributedRateLimiter } from '../distributed-rate-limiter';
 import { CostCircuitBreaker } from '../../cost-circuit-breaker';
-import { retryWithBackoff } from '../../retry-with-backoff';
-import type { Env } from '../../../types/env';
 import {
     extractClaudeSearchMetadata,
     extractClaudeTextContent,

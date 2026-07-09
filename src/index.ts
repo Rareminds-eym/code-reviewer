@@ -150,14 +150,6 @@ export default {
                 headers: { 'Content-Type': 'application/json' },
             });
         }
-        if (!env.DASHBOARD_USERNAME || !env.DASHBOARD_PASSWORD) {
-            logger.error('Missing DASHBOARD_USERNAME or DASHBOARD_PASSWORD secrets');
-            return new Response(JSON.stringify({ error: 'Worker is misconfigured (missing dashboard credentials)' }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
-
         return runWithContextAsync(context, async () => {
             const requestStartTime = Date.now();
             const { method, url } = request;

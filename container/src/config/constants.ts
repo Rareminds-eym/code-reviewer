@@ -7,30 +7,26 @@ export const MODELS = {
     gemini: 'gemini-2.5-flash',
 } as const satisfies Record<AIProvider, string>;
 
+/** Dual-agent pipeline: Stage 1 uses Sonnet for deep reasoning, Stage 2 uses Flash for verification. */
+export const DUAL_AGENT_MODELS = {
+    stage1: {
+        claude: 'claude-sonnet-4-6',
+        gemini: 'gemini-2.5-flash',
+    },
+    stage2: {
+        claude: 'claude-haiku-4-5',
+        gemini: 'gemini-2.0-flash',
+    },
+} as const;
+
 /** Maximum characters per LLM chunk. Guards against massive PR context windows. */
 export const MAX_CHUNK_CHARS = 100_000;
-
-/**
- * Hard limit on how many LLM chunks to process to prevent hitting 
- * the Cloudflare Worker subrequests limit. 
- * Workers Paid Plan: 10,000 default (configurable up to 10M via wrangler.jsonc).
- * Workers Free Plan: 50 external subrequests.
- * Note: with web search continuations, each chunk may consume up to 3 subrequests.
- */
-export const MAX_LLM_CHUNKS = 50;
 
 /**
  * Maximum number of findings a single chunk reviewer can report.
  * Prevents JSON explosion from overly verbose LLM responses.
  */
 export const MAX_FINDINGS_PER_CHUNK = 50;
-
-/**
- * Maximum characters for the synthesizer input payload.
- * 70K tokens ≈ 280K chars. Safe for Claude (200K ctx) and Gemini (1M ctx).
- * The synthesizer receives clustered JSON findings, not raw code.
- */
-export const MAX_SYNTHESIZER_INPUT_CHARS = 280_000;
 
 /**
  * Character budget for the global PR context prepended to every chunk.
@@ -52,12 +48,6 @@ export const MAX_TOTAL_FILES = 300;
 
 /** Only fetch full content for files below this byte size (200KB). */
 export const MAX_FILE_SIZE_BYTES = 200_000;
-
-/** PR actions that should trigger a review. */
-export const REVIEWABLE_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
-
-/** Worker version — update in sync with package.json on releases. */
-export const WORKER_VERSION = '1.0.0';
 
 // ---------------------------------------------------------------------------
 // Noise File Filtering

@@ -73,9 +73,11 @@ export async function callChunkReview(
     webSearchEnabled?: boolean
 ): Promise<ChunkReviewResult> {
     const provider: AIProvider = (env.AI_PROVIDER ?? DEFAULT_AI_PROVIDER) as AIProvider;
+    console.log(`[llm-debug] callChunkReview: provider='${provider}' apiKeyPresent=${!!getApiKey(provider, env)} model=${MODELS[provider] || 'unknown'}`);
 
     // Check MAP circuit breaker
     const breaker = getMapBreaker(provider);
+    console.log(`[llm-debug] callChunkReview: breaker ${provider} map=${breaker.canExecute() ? 'CLOSED' : 'OPEN'}`);
     if (!breaker.canExecute()) {
         throw new Error(`LLM circuit breaker for ${provider} (map) is OPEN - too many failures`);
     }
@@ -85,6 +87,7 @@ export async function callChunkReview(
         webSearchEnabled: webSearchEnabled ?? false,
     };
     const adapter = LLMProviderFactory.createProvider(provider, config);
+    console.log(`[llm-debug] callChunkReview: adapter=${adapter.constructor.name} model=${adapter.getModelName()}`);
 
     const executeReview = async (): Promise<ChunkReviewResult> => {
         const result = await adapter.reviewChunk(
@@ -158,6 +161,7 @@ export async function callSynthesizer(
     webSearchEnabled?: boolean
 ): Promise<SynthesisResult> {
     const primaryProvider: AIProvider = (env.AI_PROVIDER ?? DEFAULT_AI_PROVIDER) as AIProvider;
+    console.log(`[llm-debug] callSynthesizer: primary='${primaryProvider}' apiKeyPresent=${!!getApiKey(primaryProvider, env)} altAvailable=${isAlternateAvailable(primaryProvider, env)}`);
 
     // Try primary provider first
     try {
@@ -166,6 +170,7 @@ export async function callSynthesizer(
         );
     } catch (primaryError) {
         const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+        console.log(`[llm-debug] callSynthesizer: primary failed: ${errMsg.slice(0, 200)}`);
         logger.warn(`Primary synthesizer (${primaryProvider}) failed, attempting fallback`, {
             error: errMsg,
         });
@@ -173,6 +178,7 @@ export async function callSynthesizer(
         // Try alternate provider if available
         if (isAlternateAvailable(primaryProvider, env)) {
             const altProvider = getAlternateProvider(primaryProvider);
+            console.log(`[llm-debug] callSynthesizer: falling back to alt='${altProvider}'`);
             try {
                 logger.info(`Falling back to alternate synthesizer: ${altProvider}`);
                 return await callSynthesizerWithProvider(

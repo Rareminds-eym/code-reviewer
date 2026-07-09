@@ -94,7 +94,7 @@ export async function queueHandler(
 
 		return runWithContextAsync(context, async () => {
 			try {
-				await processMessage(message, env);
+				await processMessage(message, env, ctx);
 			} finally {
 				if (timerId) clearTimeout(timerId);
 				if (timeoutResolver) timeoutResolver();
@@ -111,7 +111,8 @@ export async function queueHandler(
  */
 async function processMessage(
 	message: Message<ReviewMessage>,
-	env: Env
+	env: Env,
+	ctx: ExecutionContext
 ): Promise<void> {
 	const { prNumber, title, repoFullName, headSha, checkRunId, prAuthor, prDescription } = message.body;
 
@@ -127,6 +128,17 @@ async function processMessage(
 	}
 
 	// ── Dispatch to Container ──
+	// ── Layer 1: Pre-dispatch dedup guard ──
+	// Check DEDUP_KV before token fetch or container DO wake-up.
+	// Dedup hits exit immediately — zero API calls, zero DO lifecycle.
+	const dedupKey = `review_completed:${repoFullName}:${prNumber}:${headSha}`;
+	const alreadyCompleted = await env.DEDUP_KV.get(dedupKey).catch(() => null);
+	if (alreadyCompleted === 'true') {
+		logger.info('Dedup hit — review already completed for this headSha, skipping container', { prNumber, headSha });
+		message.ack();
+		return;
+	}
+
 	let token: string;
 	try {
 		token = await getInstallationToken(env);
@@ -137,7 +149,12 @@ async function processMessage(
 	}
 
 	try {
-		const container = getContainer(env.REVIEW_CONTAINER, `pr-${repoFullName.replace('/', '-')}-${prNumber}`);
+		console.log(`[queue-debug] Sending to container: AI_PROVIDER='${env.AI_PROVIDER}' ANTHROPIC_KEY_PRESENT=${!!env.ANTHROPIC_API_KEY} GEMINI_KEY_PRESENT=${!!env.GEMINI_API_KEY}`);
+		// ── Layer 2: Fresh DO per commit via headSha in the ID ──
+		// Each unique commit hash gets its own DO instance. Old containers
+		// naturally expire via sleepAfter. No alarm state carries over.
+		const containerId = `pr-${repoFullName.replace('/', '-')}-${prNumber}-${headSha}`;
+		const container = getContainer(env.REVIEW_CONTAINER, containerId);
 
 		const response = await withTimeout(
 			async (signal) => {
@@ -154,6 +171,7 @@ async function processMessage(
 							prAuthor,
 							prDescription,
 							checkRunId,
+							installationToken: token,
 						}),
 					})
 				);
@@ -166,6 +184,16 @@ async function processMessage(
 			const errorBody = await response.text().catch(() => 'unknown');
 			const status = response.status;
 			throw new Error(`Container review failed with status ${status}: ${errorBody.slice(0, 500)}`);
+		}
+
+		// ── Layer 4: Explicit shutdown after zero-work response ──
+		// If the container returned dedup'd metrics (totalTimeMs === 0),
+		// shut it down immediately instead of waiting for sleepAfter.
+		const responseBody = await response.json().catch(() => ({})) as any;
+		if (responseBody?.metrics?.totalTimeMs === 0) {
+			ctx.waitUntil(container.stopAfterReview().catch(e =>
+				logger.error('Non-fatal: stopAfterReview failed', e instanceof Error ? e : undefined, { prNumber })
+			));
 		}
 
 		logger.info('Container review completed successfully', { prNumber });

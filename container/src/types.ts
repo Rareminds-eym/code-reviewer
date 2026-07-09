@@ -61,7 +61,6 @@ export interface UnifiedFinding {
 	title: string;
 	issue: string;
 	currentCode?: string;
-	suggestedCode?: string;
 	category: string;
 }
 
@@ -78,6 +77,10 @@ export interface ReviewResponse {
 	failedChunks?: number;
 	totalChunks?: number;
 	requestId?: string;
+	/** Build gate failed — pipeline terminated before LLM calls */
+	buildFailed?: boolean;
+	/** Captured build error logs */
+	buildErrorLog?: string;
 }
 
 export interface ReviewMetrics {

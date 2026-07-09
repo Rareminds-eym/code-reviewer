@@ -1,10 +1,21 @@
 import { execa } from 'execa';
-import { rm, readdir } from 'node:fs/promises';
+import { rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 
+const GIT_CACHE_BASE = '/mnt/git-cache';
+
 /**
- * Shallow-clone the PR's head commit into the work directory.
- * Uses the GitHub App installation token for authentication.
+ * Concurrency-safe repository checkout using a reference-cache mirror.
+ *
+ * Flow:
+ * 1. Maintain a bare mirror at /mnt/git-cache/{repo}.git
+ * 2. Mirror bootstrap: clone --bare if missing, git fetch if present
+ * 3. Reference clone into private workDir (--reference links objects locally)
+ * 4. Fetch the exact head SHA + checkout
+ *
+ * This design prevents network-heavy clones while avoiding concurrent write
+ * corruption: the mirror is updated via bare git fetch (append-only), and the
+ * active checkout/index/HEAD are local to the ephemeral workDir.
  */
 export async function cloneRepository(
 	repoFullName: string,
@@ -13,48 +24,73 @@ export async function cloneRepository(
 	workDir: string,
 	signal?: AbortSignal
 ): Promise<void> {
-	// Configure git to use GITHUB_TOKEN environment variable for authentication.
-	// This avoids writing the plaintext installationToken in .git/config.
+	const referenceMirror = `${GIT_CACHE_BASE}/${repoFullName}.git`;
+	const repoUrl = `https://github.com/${repoFullName}.git`;
+
+	const gitEnv = {
+		GITHUB_TOKEN: installationToken,
+		GIT_TERMINAL_PROMPT: '0',
+		HOME: '/tmp',
+	};
+
+	// ── Step 1: Bootstrap or update reference mirror ──
+	const mirrorExists = await access(referenceMirror).then(() => true).catch(() => false);
+
+	if (!mirrorExists) {
+		// Create parent cache directory
+		await execa('mkdir', ['-p', GIT_CACHE_BASE], { timeout: 5_000 });
+
+		console.log(`[git-ops] Creating bare mirror: ${referenceMirror}`);
+		await execa('git', ['clone', '--bare', repoUrl, referenceMirror], {
+			timeout: 180_000,
+			cancelSignal: signal,
+			env: gitEnv,
+		});
+	} else {
+		console.log(`[git-ops] Updating existing mirror: ${referenceMirror}`);
+		await execa('git', ['--git-dir', referenceMirror, 'fetch', 'origin'], {
+			timeout: 120_000,
+			cancelSignal: signal,
+			env: gitEnv,
+		});
+	}
+
+	// ── Step 2: Reference clone into workspace ──
+	console.log(`[git-ops] Reference-cloning into ${workDir}`);
 	await execa('git', [
 		'clone',
+		'--reference', referenceMirror,
 		'--depth=50',
+		'--filter=blob:none',
 		'--single-branch',
-		'-c', 'credential.helper=!f() { echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; }; f',
-		`https://github.com/${repoFullName}.git`,
-		workDir
+		repoUrl,
+		workDir,
 	], {
-		timeout: 60_000, // 60s timeout for large repos
+		timeout: 120_000,
 		cancelSignal: signal,
-		env: {
-			GITHUB_TOKEN: installationToken,
-			GIT_TERMINAL_PROMPT: '0', // Never prompt for credentials
-		},
+		env: gitEnv,
 	});
 
-	// Fetch the specific PR head commit so we can diff against it
+	// ── Step 3: Fetch the exact commit and check it out ──
+	console.log(`[git-ops] Fetching and checking out ${headSha}`);
 	await execa('git', ['fetch', 'origin', headSha, '--depth=50'], {
 		cwd: workDir,
-		timeout: 30_000,
+		timeout: 60_000,
 		cancelSignal: signal,
-		env: {
-			GITHUB_TOKEN: installationToken,
-		},
+		env: { GITHUB_TOKEN: installationToken },
 	});
 
-	// Checkout the PR head
 	await execa('git', ['checkout', headSha], {
 		cwd: workDir,
-		timeout: 10_000,
+		timeout: 15_000,
 		cancelSignal: signal,
 	});
 }
 
 /**
- * Get the list of files changed between the PR head and the merge base.
- * Returns relative file paths within the repository.
+ * List files changed between HEAD and the merge-base with origin/HEAD.
  */
 export async function getChangedFiles(workDir: string, signal?: AbortSignal): Promise<string[]> {
-	// Find the merge base between HEAD and the default branch
 	let mergeBase: string;
 	try {
 		const result = await execa('git', ['merge-base', 'HEAD', 'origin/HEAD'], {
@@ -64,11 +100,9 @@ export async function getChangedFiles(workDir: string, signal?: AbortSignal): Pr
 		});
 		mergeBase = result.stdout.trim();
 	} catch {
-		// Fallback: diff against HEAD~1 if merge-base discovery fails
 		mergeBase = 'HEAD~1';
 	}
 
-	// Get changed file names
 	const result = await execa('git', ['diff', '--name-only', '--diff-filter=ACMRT', mergeBase, 'HEAD'], {
 		cwd: workDir,
 		timeout: 10_000,
@@ -83,7 +117,7 @@ export async function getChangedFiles(workDir: string, signal?: AbortSignal): Pr
 }
 
 /**
- * Get the full diff content for a specific file.
+ * Get the full diff for a specific file.
  */
 export async function getFileDiff(workDir: string, filePath: string, signal?: AbortSignal): Promise<string> {
 	let mergeBase: string;
@@ -106,9 +140,6 @@ export async function getFileDiff(workDir: string, filePath: string, signal?: Ab
 	return result.stdout;
 }
 
-/**
- * Check if a file is worth reviewing (not generated, not binary, not vendor).
- */
 function isReviewableFile(filename: string): boolean {
 	const skipPatterns = [
 		/^node_modules\//,
@@ -134,7 +165,7 @@ function isReviewableFile(filename: string): boolean {
 }
 
 /**
- * Clean up the temporary clone directory.
+ * Clean up the temporary working directory.
  */
 export async function cleanup(workDir: string): Promise<void> {
 	try {
