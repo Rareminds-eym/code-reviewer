@@ -55,6 +55,10 @@ export interface Env {
   OTEL_EXPORTER_URL?: string;
   /** Enable web search grounding for LLM reviews ("true" to enable). Default: "false". */
   ENABLE_WEB_SEARCH?: string;
+  /** Enable dual-agent review pipeline ("true" to enable). Default: "false". */
+  ENABLE_DUAL_AGENT?: string;
+  /** GitHub check run name to wait for before starting review. Default: "Cloudflare Pages". Set empty to skip deferral. */
+  BUILD_CHECK_NAME?: string;
 
   // --- Queues ---
   /** The Queue responsible for processing reviews in the background */
@@ -91,4 +95,6 @@ export interface ReviewMessage {
   requestId?: string;
   /** PR body/description for intent context. Capped at 2KB by the webhook handler. */
   prDescription?: string;
+  /** If true, the container will skip "previously raised" suppression, force dual-agent, and use thorough prompts. */
+  deepReview?: boolean;
 }

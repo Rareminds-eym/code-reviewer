@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { readFile, access as fsAccess } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -224,96 +224,6 @@ async function withTimeout<T>(
 }
 
 /**
- * Build Gate — runs the project's compile/build step before spending LLM tokens.
- * If the build fails, the pipeline terminates cleanly with buildFailed: true,
- * posts error logs to GitHub Check Run and Zoho Cliq, and returns early
- * without consuming any LLM budget.
- */
-async function runBuildGate(
-	workDir: string,
-	repoFullName: string,
-	checkRunId: number | undefined,
-	token: string,
-	signal?: AbortSignal
-): Promise<{ success: true } | { success: false; errorLog: string }> {
-	console.log(`[build-gate] Running build compilation check...`);
-
-	// Detect package manager and install dependencies
-	let installCmd: string[];
-	if (await fsAccess(join(workDir, 'yarn.lock')).then(() => true).catch(() => false)) {
-		installCmd = ['yarn', 'install', '--frozen-lockfile', '--ignore-scripts'];
-	} else if (await fsAccess(join(workDir, 'pnpm-lock.yaml')).then(() => true).catch(() => false)) {
-		installCmd = ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'];
-	} else {
-		installCmd = ['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'];
-	}
-
-	try {
-		console.log(`[build-gate] Installing dependencies: ${installCmd.join(' ')}`);
-		await execa(installCmd[0], installCmd.slice(1), {
-			cwd: workDir,
-			timeout: 180_000,
-			cancelSignal: signal,
-		});
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		console.warn(`[build-gate] Dependency install failed (non-fatal, attempting build anyway): ${msg}`);
-	}
-
-	// Run build
-	try {
-		const buildResult = await execa('npm', ['run', 'build', '--if-present'], {
-			cwd: workDir,
-			timeout: 300_000,
-			cancelSignal: signal,
-			reject: false,
-		});
-
-		if (buildResult.exitCode !== 0 && buildResult.exitCode !== null) {
-			const errorLog = (buildResult.stderr || buildResult.stdout || 'Build failed with unknown error').slice(0, 50000);
-			console.error(`[build-gate] Build FAILED (exit code ${buildResult.exitCode})`);
-
-			// Post to Check Run
-			if (checkRunId) {
-				try {
-					await updateCheckRun(
-						repoFullName,
-						checkRunId,
-						token,
-						'failure',
-						`## ❌ Build Failed\n\n\`\`\`\n${errorLog.slice(0, 30000)}\n\`\`\`\n\nReview pipeline terminated — zero LLM tokens spent.`
-					);
-				} catch { /* best-effort */ }
-			}
-
-			return { success: false, errorLog };
-		}
-
-		// Prune /tmp to free disk space (Architecture §8.3)
-		await execa('sh', ['-c', 'rm -rf /tmp/*'], { timeout: 30_000 }).catch(() => {});
-		console.log(`[build-gate] Build passed successfully.`);
-		return { success: true };
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		// Timeout or abort — treat as failure
-		// Prune /tmp to free disk space (Architecture §8.3)
-		await execa('sh', ['-c', 'rm -rf /tmp/*'], { timeout: 30_000 }).catch(() => {});
-		if (checkRunId) {
-			try {
-				await updateCheckRun(
-					repoFullName,
-					checkRunId,
-					token,
-					'failure',
-					`## ⏰ Build Timed Out\n\n\`\`\`\n${msg}\n\`\`\`\n\nReview pipeline terminated.`
-				);
-			} catch { /* best-effort */ }
-		}
-		return { success: false, errorLog: msg };
-	}
-}
-
-/**
  * Graphify Indexing — runs the Graphify AST knowledge graph builder
  * on the checked-out workspace. Injects the graph data as context
  * for the review coordinators.
@@ -373,6 +283,7 @@ export async function runReviewPipeline(
 	requestId: string,
 	signal?: AbortSignal
 ): Promise<ReviewResponse> {
+	console.log(`[container-debug] runReviewPipeline ENTERED at ${Date.now()} for PR #${request.prNumber}`);
 	// ── Step 0: Validate Env & Setup Mock Env ──
 	validateEnvironment();
 
@@ -402,15 +313,32 @@ export async function runReviewPipeline(
 		CLIQ_BOT_NAME: process.env.CLIQ_BOT_NAME || '',
 		CLIQ_CHANNEL_ID: process.env.CLIQ_CHANNEL_ID || '',
 		CLIQ_DB_NAME: process.env.CLIQ_DB_NAME || '',
+		USAGE_API_KEY: process.env.USAGE_API_KEY || '',
 	};
 
 	// ── Step 0.1: Idempotency Guard ──
 	const dedupKey = `review_completed:${request.repoFullName}:${request.prNumber}:${request.headSha}`;
-	const isAlreadyCompleted = await env.DEDUP_KV.get(dedupKey).catch(e => {
-		console.warn('Failed to check completion key (non-fatal):', e);
-		return null;
-	});
-	if (isAlreadyCompleted === 'true') {
+	let isAlreadyCompleted = false;
+	try {
+		const cached = await env.DEDUP_KV.get(dedupKey).catch(e => {
+			console.warn('Failed to check completion key (non-fatal):', e);
+			return null;
+		});
+		if (cached) {
+			if (cached === 'true') {
+				isAlreadyCompleted = true;
+			} else {
+				const parsed = JSON.parse(cached);
+				if (parsed && typeof parsed === 'object' && parsed.completed) {
+					isAlreadyCompleted = true;
+				}
+			}
+		}
+	} catch {
+		// Ignore JSON parse errors
+	}
+
+	if (isAlreadyCompleted) {
 		console.log(`[${requestId}] PR review already completed for ${request.repoFullName}#${request.prNumber} at ${request.headSha}. Skipping.`);
 		return {
 			staticFindings: [],
@@ -533,35 +461,6 @@ export async function runReviewPipeline(
 		// Filter allowedFiles to only include files that exist on disk in the clone (exclude deleted files)
 		const existingAllowedFiles = allowedFiles.filter(f => existsSync(join(workDir, f)));
 
-		// ── Build Gate: Compile check before LLM token spend ──
-		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🔨 Running build compilation check...');
-		const buildGateResult = await runBuildGate(workDir, request.repoFullName, request.checkRunId, token, signal);
-		if (!buildGateResult.success) {
-			console.log(`[${requestId}] Build gate FAILED. Terminating pipeline — zero LLM tokens spent.`);
-			// Post Cliq failure alert
-			if (env.CLIQ_CLIENT_ID && env.CLIQ_CLIENT_SECRET && env.CLIQ_REFRESH_TOKEN && env.CLIQ_BOT_NAME && env.CLIQ_CHANNEL_ID) {
-				try {
-					await postToCliq(
-						env.CLIQ_CLIENT_ID, env.CLIQ_CLIENT_SECRET, env.CLIQ_REFRESH_TOKEN,
-						env.CLIQ_BOT_NAME, env.CLIQ_CHANNEL_ID,
-						request.repoFullName, request.prNumber, request.title, request.prAuthor,
-						'failure',
-						{ critical: 0, high: 0, medium: 0, low: 0 },
-						env.CLIQ_DB_NAME,
-						[`Build failed: ${buildGateResult.errorLog.slice(0, 500)}`]
-					);
-				} catch { /* best-effort */ }
-			}
-			// Return 200 OK — do NOT throw, prevent queue retry
-			return {
-				staticFindings: [],
-				blastRadius: { changedFiles: [], impactedFiles: [], changedSymbols: [], impactedSymbols: [] },
-				metrics: { ...metrics, totalTimeMs: Date.now() - totalStart },
-				buildFailed: true,
-				buildErrorLog: buildGateResult.errorLog,
-			};
-		}
-
 		console.log(`[${requestId}] Building AST dependency graph via Tree-Sitter...`);
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🌳 Building Deep Dependency Graph via Tree-Sitter AST...');
 		const parseStart = Date.now();
@@ -579,7 +478,7 @@ export async function runReviewPipeline(
 
 		// ── Graphify AST Knowledge Graph Indexing ──
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🗺️ Indexing codebase AST via Graphify...');
-		const { graphJson, graphContext: graphifyContext } = await runGraphifyIndexing(workDir, signal);
+		const { graphContext: graphifyContext } = await runGraphifyIndexing(workDir, signal);
 
 		// Map static analysis outputs to standardized ReviewFindings
 		const mappedStaticFindings = staticFindings.map(f => ({
@@ -630,6 +529,9 @@ export async function runReviewPipeline(
 				const chunkFiles = chunkFileMap[i] || [];
 				
 				let chunkSystemPrompt = composeChunkPrompt(activeProfile, chunkFiles, customRulesPrompt, webSearchActive);
+				if (request.deepReview) {
+					chunkSystemPrompt += '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nDEEP REVIEW MODE — EXTRA THOROUGH ANALYSIS REQUIRED\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nYou are performing a DEEP REVIEW. Be EXTRA thorough. Scrutinize EVERY line for:\n- Edge cases and boundary conditions\n- Race conditions and concurrency bugs\n- Security vulnerabilities (XSS, injection, auth bypass, CSRF, SSRF)\n- Performance issues and memory leaks\n- Error handling gaps and missing validation\n- Type safety violations\n- Architectural and design problems\n- Logic errors and off-by-one bugs\n- Inconsistent error/success patterns\n\nDo NOT skip any potential issue. Re-examine each file from multiple angles. Even subtle issues matter in a deep review.';
+				}
 				if (webSearchActive && cachedSourcesContext) {
 					chunkSystemPrompt += '\n\n' + cachedSourcesContext;
 				}
@@ -729,7 +631,7 @@ export async function runReviewPipeline(
 		}
 
 		// ── Step 7: Dual-Agent Pipeline — Stage 1 (Persona Review) + Stage 2 (Verification) ──
-		const enableDualAgent = process.env.ENABLE_DUAL_AGENT === 'true';
+		const enableDualAgent = request.deepReview || process.env.ENABLE_DUAL_AGENT === 'true';
 
 		let stage1Results = { findings: [] as any[], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, personaResults: [] as any[] };
 		let stage2Results = { verifiedFindings: [] as any[], rejectedFindings: [] as any[], stats: { totalEvaluated: 0, verified: 0, rejected: 0 }, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } };
@@ -877,8 +779,9 @@ export async function runReviewPipeline(
 
 		const deduplicated = deduplicateFindings(combinedFindings);
 		const modifiedFileSet = new Set(allowedFiles);
-		const { filtered: deltaFiltered, suppressed: suppressedCount } =
-			filterPreviouslyRaisedFindings(deduplicated, previousReview, modifiedFileSet);
+		const { filtered: deltaFiltered, suppressed: suppressedCount } = request.deepReview
+			? { filtered: deduplicated, suppressed: 0 }
+			: filterPreviouslyRaisedFindings(deduplicated, previousReview, modifiedFileSet);
 
 		const clusters = clusterFindings(deltaFiltered);
 
@@ -929,7 +832,10 @@ export async function runReviewPipeline(
 
 			try {
 				const synthPreviousContext = formatPreviousReviewContext(previousReview);
-				const synthesizerSystemPrompt = composeSynthesizerPrompt(activeProfile, webSearchActive, synthPreviousContext);
+				let synthesizerSystemPrompt = composeSynthesizerPrompt(activeProfile, webSearchActive, synthPreviousContext);
+				if (request.deepReview) {
+					synthesizerSystemPrompt += '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nDEEP REVIEW MODE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nYou are performing a DEEP REVIEW. The findings below include ALL potential issues (including ones previously flagged in earlier reviews). Re-evaluate each cluster with extra scrutiny. Look for:\n- Patterns and systemic issues across files\n- Architectural concerns that individual findings miss\n- Interactions between multiple findings that create compound risks\n\nDo NOT dismiss findings just because they were raised before — they were re-identified intentionally for re-evaluation. Be thorough in your synthesis.';
+				}
 
 				const result = await withTimeout(
 					(sig) => callSynthesizer(
@@ -1098,7 +1004,8 @@ export async function runReviewPipeline(
 
 		// Mark review as completed to prevent duplicate reviews on retries
 		const completionKey = `review_completed:${request.repoFullName}:${request.prNumber}:${request.headSha}`;
-		await env.DEDUP_KV.put(completionKey, 'true', { expirationTtl: 86400 }).catch(e => {
+		const dedupValue = JSON.stringify({ completed: true, conclusion });
+		await env.DEDUP_KV.put(completionKey, dedupValue, { expirationTtl: 86400 }).catch(e => {
 			console.warn('Failed to store completion key (non-fatal):', e);
 		});
 

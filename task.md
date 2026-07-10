@@ -14,14 +14,11 @@
   - `[x]` Added `--filter=blob:none` to prevent ENOSPC.
   - `[x]` Checkout to target commit (`git checkout [headSha]`).
 
-- `[x]` **Phase 3: Build & SAST Gatekeeper (`container/src/pipeline.ts`)**
-  - `[x]` Run compile/build child process (auto-detects npm/yarn/pnpm).
+- `[x]` **Phase 3: SAST Gatekeeper (`container/src/pipeline.ts`)**
   - `[x]` Run SAST linters (`oxlint`, `biome`, `semgrep`).
-  - `[x]` Short-circuit on build failure: post logs, send Cliq alert, return 200 OK with `buildFailed: true`.
-  - `[x]` `/tmp` cleanup after build (success and failure paths).
 
 - `[x]` **Phase 4: AST Graphing with Graphify (`container/src/pipeline.ts`)**
-  - `[x]` Run `graphify .` after successful build.
+  - `[x]` Run `graphify .` after clone.
   - `[x]` Inject `graphify-out/graph.json` into review context.
 
 - `[x]` **Phase 5: Stage 1 Review Coordinator & Personas**

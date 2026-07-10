@@ -21,6 +21,7 @@ export interface ContainerEnv {
   HONEYCOMB_API_KEY?: string;
   OTEL_EXPORTER_URL?: string;
   ENABLE_WEB_SEARCH?: string;
+  ENABLE_DUAL_AGENT?: string;
 }
 
 import type { KvProxy } from '../kv-proxy';

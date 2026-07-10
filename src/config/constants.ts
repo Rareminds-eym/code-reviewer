@@ -59,6 +59,9 @@ export const REVIEWABLE_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 
 /** Worker version — update in sync with package.json on releases. */
 export const WORKER_VERSION = '1.0.0';
 
+/** Name of the CI check run to wait for before starting a review. */
+export const BUILD_CHECK_NAME = 'Cloudflare Pages';
+
 // ---------------------------------------------------------------------------
 // Noise File Filtering
 // ---------------------------------------------------------------------------

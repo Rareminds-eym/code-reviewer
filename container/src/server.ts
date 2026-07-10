@@ -3,6 +3,7 @@ import { logger as honoLogger } from 'hono/logger';
 import { runReviewPipeline } from './pipeline.js';
 import type { ReviewRequest, ReviewResponse } from './types.js';
 
+console.log('[ReviewContainer] server.ts loaded — creating Hono app');
 const app = new Hono();
 
 let isShuttingDown = false;
@@ -61,12 +62,6 @@ app.post('/review', async (c) => {
 	try {
 		const response: ReviewResponse = await runReviewPipeline(request, requestId, controller.signal);
 
-		// Handle build gate failure — return 200 OK, not an error
-		if (response.buildFailed) {
-			console.log(`[${requestId}] Build gate failed. Returning 200 OK (no queue retry).`);
-			return c.json(response);
-		}
-
 		console.log(`[${requestId}] Review completed in ${Date.now() - startTime}ms`, {
 			staticFindings: response.staticFindings.length,
 		});
@@ -100,6 +95,8 @@ const server = serve({
 	fetch: app.fetch,
 	port,
 });
+
+console.log(`[ReviewContainer] Server listening on port ${port}`);
 
 // SIGTERM Graceful Shutdown Handler (Gap 52 / Task 3b)
 process.on('SIGTERM', () => {

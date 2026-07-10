@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary & Design Overview
 
-The code reviewer pipeline was transitioned to an asynchronous, build-gated, double-agent verification model with complete legacy cleanup.
+The code reviewer pipeline was transitioned to an asynchronous, CI-deferred, double-agent verification model with complete legacy cleanup.
 
 ```
 [Webhook Event]
@@ -64,10 +64,9 @@ The code reviewer pipeline was transitioned to an asynchronous, build-gated, dou
 
 ---
 
-### Component 4: Build, SAST, and Graphify Gates
+### Component 4: SAST and Graphify Gates
 
 #### [MODIFIED] [pipeline.ts](file:///mnt/E230EB0F30EAEA0D/Rareminds/agents/code-reviewer/container/src/pipeline.ts)
-- **Build Gate**: Auto-detects package manager (npm/yarn/pnpm), installs deps, runs build. On failure posts Cliq card + CheckRun failure, returns 200 OK with `buildFailed: true`. Includes `/tmp` cleanup via `sh -c 'rm -rf /tmp/*'` after build (success and failure paths).
 - **Graphify Indexing**: Runs `graphify .`, reads `graphify-out/graph.json`, injects graph context.
 - **Stage 1**: Claude Sonnet 4 (`claude-sonnet-4-20250514`) with Architect/SRE/Security personas, concurrency 3.
 - **Stage 2**: Gemini 2.0 Flash verification of Stage 1 findings.

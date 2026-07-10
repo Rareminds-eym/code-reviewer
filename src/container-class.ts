@@ -59,7 +59,12 @@ export class ReviewContainer extends Container<any> {
 			HONEYCOMB_API_KEY: env.HONEYCOMB_API_KEY || '',
 			OTEL_EXPORTER_URL: env.OTEL_EXPORTER_URL || '',
 			ENABLE_WEB_SEARCH: env.ENABLE_WEB_SEARCH || 'false',
+			ENABLE_DUAL_AGENT: env.ENABLE_DUAL_AGENT || 'false',
 		};
+	}
+
+	override fetch(request: Request): Promise<Response> {
+		return this.containerFetch(request);
 	}
 
 	override onStart(): void {

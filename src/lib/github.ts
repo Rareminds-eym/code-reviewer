@@ -154,6 +154,46 @@ export async function fetchChangedFiles(
 }
 
 // ---------------------------------------------------------------------------
+// Check Run Querying
+// ---------------------------------------------------------------------------
+
+export interface CheckRunSummary {
+	id: number;
+	name: string;
+	status: 'queued' | 'in_progress' | 'completed';
+	conclusion: string | null;
+}
+
+/**
+ * Fetches all check runs for a given commit SHA.
+ * Used by the webhook handler to decide whether to defer the review
+ * while another CI pipeline (e.g. Cloudflare Pages build) is still running.
+ */
+export async function getCommitCheckRuns(
+	repoFullName: string,
+	headSha: string,
+	token: string
+): Promise<CheckRunSummary[]> {
+	const allRuns: CheckRunSummary[] = [];
+	let page = 1;
+	while (true) {
+		const url = `${GITHUB_API_BASE}/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100&page=${page}`;
+		const res = await fetch(url, {
+			headers: githubHeaders(token),
+		});
+		if (!res.ok) {
+			throw new Error(`GitHub check-runs API returned ${res.status}: ${await res.text().catch(() => 'unknown')}`);
+		}
+		const body = (await res.json()) as { check_runs: CheckRunSummary[]; total_count: number };
+		const runs = body.check_runs ?? [];
+		allRuns.push(...runs);
+		if (runs.length < 100) break;
+		page++;
+	}
+	return allRuns;
+}
+
+// ---------------------------------------------------------------------------
 // Smart File Classification
 // ---------------------------------------------------------------------------
 
@@ -957,6 +997,84 @@ export async function createCheckRun(
     } catch (error) {
         circuitBreakers.github.recordFailure();
         throw error;
+    }
+}
+
+/**
+ * Updates an existing Check Run progress to "in_progress".
+ * Includes retry logic and circuit breaker protection.
+ */
+export async function updateCheckRunProgress(
+    repoFullName: string,
+    checkRunId: number,
+    token: string,
+    summary: string,
+): Promise<void> {
+    // Check circuit breaker before attempting
+    if (!circuitBreakers.github.canExecute()) {
+        logger.warn('GitHub API circuit breaker is OPEN, skipping check run progress update');
+        return; // Non-critical: don't throw
+    }
+
+    const executeUpdate = async (): Promise<void> => {
+        const url = `${GITHUB_API_BASE}/repos/${repoFullName}/check-runs/${checkRunId}`;
+        const truncatedSummary = truncateMarkdown(summary);
+
+        const response = await fetch(url, {
+            method: 'PATCH',
+            headers: {
+                ...githubHeaders(token),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                name: 'AI Code Reviewer',
+                status: 'in_progress',
+                output: {
+                    title: 'AI Code Review',
+                    summary: truncatedSummary,
+                },
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            const retryAfter = response.status === 429 ? response.headers.get('retry-after') : null;
+            const errorMessage = `Failed to update check run progress: ${response.status} — ${errorText}`;
+            if (response.status === 429 && retryAfter) {
+                const retryAfterMs = parseInt(retryAfter, 10) * 1000;
+                if (!isNaN(retryAfterMs)) {
+                    throw new RateLimitError(errorMessage, undefined, retryAfterMs);
+                }
+            }
+            throw new Error(errorMessage);
+        }
+    };
+
+    try {
+        const { attempts } = await retryWithBackoff(
+            executeUpdate,
+            'GitHub update check run progress',
+            {
+                maxAttempts: 3,
+                initialDelayMs: 1000,
+                backoffMultiplier: 2,
+                jitter: true,
+            }
+        );
+
+        circuitBreakers.github.recordSuccess();
+
+        if (attempts > 1) {
+            logger.info(`Check run progress updated after ${attempts} attempts`, {
+                checkRunId,
+                attempts,
+            });
+        }
+    } catch (error) {
+        circuitBreakers.github.recordFailure();
+        logger.error('Failed to update check run progress', error instanceof Error ? error : undefined, {
+            checkRunId,
+        });
     }
 }
 

@@ -7,11 +7,7 @@ RUN apk add --no-cache \
     py3-pip \
     make \
     g++ \
-    build-base \
-    py3-numpy \
-    py3-scipy \
-    py3-matplotlib \
-    py3-networkx
+    build-base
 
 # Install Rust-based fast linters (no node_modules needed, run as standalone binaries)
 RUN npm install -g oxlint @biomejs/biome
@@ -32,7 +28,8 @@ COPY dist/ ./dist/
 EXPOSE 3000
 
 # Health check for Cloudflare Container readiness detection
+# Use node -e fetch instead of wget --spider (busybox wget doesn't support --spider)
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ping || exit 1
+    CMD node -e "fetch('http://localhost:3000/ping').then(r => process.exit(r.ok?0:1)).catch(() => process.exit(1))"
 
 CMD ["node", "dist/server.js"]

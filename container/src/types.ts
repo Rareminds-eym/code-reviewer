@@ -13,7 +13,9 @@ export interface ReviewRequest {
 	allowedFiles: string[];
 	/** Worker-generated request ID for distributed tracing */
 	requestId?: string;
-	checkRunId?: number;
+  checkRunId?: number;
+  /** If true, skip "previously raised" suppression and use enhanced/deep review prompts. */
+  deepReview?: boolean;
 }
 
 /**
@@ -77,10 +79,6 @@ export interface ReviewResponse {
 	failedChunks?: number;
 	totalChunks?: number;
 	requestId?: string;
-	/** Build gate failed — pipeline terminated before LLM calls */
-	buildFailed?: boolean;
-	/** Captured build error logs */
-	buildErrorLog?: string;
 }
 
 export interface ReviewMetrics {

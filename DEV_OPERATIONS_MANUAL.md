@@ -173,7 +173,7 @@ curl -X POST http://localhost:8787/ \
   -H "X-GitHub-Event: pull_request" \
   -H "X-GitHub-Delivery: test-delivery-123" \
   -H "X-Hub-Signature-256: sha256=0cab85fbf009939470a02bdada6b00ce08228f80b1842ffc7a7ea1f7450d2a48" \
-  -d '{"action":"opened","number":42,"pull_request":{"number":42,"title":"feat: verify build-gates and dual-agent reviews","body":"Verifying build-gates and dual-agent reviews.","html_url":"https://github.com/gokulrajrz/code-reviewer/pull/42","diff_url":"https://github.com/gokulrajrz/code-reviewer/pull/42.diff","patch_url":"https://github.com/gokulrajrz/code-reviewer/pull/42.patch","commits":1,"additions":5,"deletions":0,"changed_files":1,"head":{"ref":"dev","sha":"a0dbe13e8b0d268593414986520e0ffad05eb6db"},"base":{"ref":"dev","sha":"a0dbe13e8b0d268593414986520e0ffad05eb6db"},"user":{"login":"developer"}},"repository":{"id":1,"full_name":"gokulrajrz/code-reviewer","html_url":"https://github.com/gokulrajrz/code-reviewer","default_branch":"main"},"sender":{"login":"developer","id":1}}'
+  -d '{"action":"opened","number":42,"pull_request":{"number":42,"title":"feat: verify CI-deferred review pipeline","body":"Verifying CI-deferred review pipeline.","html_url":"https://github.com/gokulrajrz/code-reviewer/pull/42","diff_url":"https://github.com/gokulrajrz/code-reviewer/pull/42.diff","patch_url":"https://github.com/gokulrajrz/code-reviewer/pull/42.patch","commits":1,"additions":5,"deletions":0,"changed_files":1,"head":{"ref":"dev","sha":"a0dbe13e8b0d268593414986520e0ffad05eb6db"},"base":{"ref":"dev","sha":"a0dbe13e8b0d268593414986520e0ffad05eb6db"},"user":{"login":"developer"}},"repository":{"id":1,"full_name":"gokulrajrz/code-reviewer","html_url":"https://github.com/gokulrajrz/code-reviewer","default_branch":"main"},"sender":{"login":"developer","id":1}}'
 ```
 
 ---
@@ -185,23 +185,18 @@ curl -X POST http://localhost:8787/ \
 * Uses `--depth=50` and `--filter=blob:none` to keep commits light and avoid `ENOSPC` disk depletion.
 * The reference updates are bare (append-only), protecting concurrent sandbox runs from writing/reading collisions.
 
-### 6.2 Build & SAST Gatekeeper
-* Compiles code using `npm run build` (or pnpm/yarn equivalents) before spending LLM tokens.
-* **Short-Circuiting**: On failure, compiles compilation errors, updates the GitHub Check Run to `failed`, sends a Zoho Cliq failure card, and returns `200 OK` with `{ buildFailed: true }` so the Worker acknowledges (`ack()`) the message and aborts without repeating.
-* Automatically prunes `/tmp` workspaces under both success and failure paths.
-
-### 6.3 Codebase AST Indexing (Graphify)
-* Runs `graphify .` after builds, parsing class/interface structures into `graphify-out/graph.json`.
+### 6.2 Codebase AST Indexing (Graphify)
+* Runs `graphify .` after clone, parsing class/interface structures into `graphify-out/graph.json`.
 * Injects God nodes (highly connected hubs) as context for review coordinators.
 
-### 6.4 Stage 1 Persona Review (Claude Sonnet 4)
+### 6.3 Stage 1 Persona Review (Claude Sonnet 4)
 * Runs Claude Sonnet 4 (`claude-sonnet-4-20250514`) as the primary reviewer.
 * Invokes three personas concurrently in parallel (Architect, SRE, Security).
 * Enforces the **YAGNI (Ponytail) Validation Ladder** (Rung 1: Criticality, Rung 2: Existential checks, Rung 3: Stdlib usage, Rung 4: Surgical fix) and a **Zero-Trust Comments Policy** (direct verification of code, treating inline doc assertions as untrusted).
 * Tracks a hard **100k Token ceiling** (`MAX_STAGE1_TOKENS`); stops reviews if exceeded.
 * Runs a **30s heartbeat check** to prevent Check Run from timing out.
 
-### 6.5 Stage 2 Verification & Smart Deduplication (Gemini 2.0 Flash)
+### 6.4 Stage 2 Verification & Smart Deduplication (Gemini 2.0 Flash)
 * Gemini 2.0 Flash (`gemini-2.0-flash`) acts as a verification gate, validating Stage 1 findings in batches of 20 to eliminate false positives.
 * **Smart Deduplication**: Checks existing PR review threads. Suppresses comment if the line is unmodified and an active thread is open; re-posts comment if the line was modified but code remains broken; re-posts comment if the thread was marked resolved but code is still broken.
 * Consolidates all open/suppressed issues in a single unified markdown checklist.

@@ -29,7 +29,9 @@
 		"CLIQ_BOT_NAME": "codereviewbot",
 		"CLIQ_CHANNEL_ID": "prweb",
 		"CLIQ_DB_NAME": "githubusermap",
-		"ENABLE_WEB_SEARCH": "true"
+		"ENABLE_WEB_SEARCH": "true",
+		"ENABLE_DUAL_AGENT": "false",
+		"BUILD_CHECK_NAME": "Cloudflare Pages"
 	},
 	/**
 	 * Queues
@@ -134,7 +136,9 @@
 				"CLIQ_BOT_NAME": "codereviewbot-dev",
 				"CLIQ_CHANNEL_ID": "prweb-dev",
 				"CLIQ_DB_NAME": "githubusermap-dev",
-				"ENABLE_WEB_SEARCH": "true"
+				"ENABLE_WEB_SEARCH": "true",
+				"ENABLE_DUAL_AGENT": "false",
+				"BUILD_CHECK_NAME": "Cloudflare Pages"
 			},
 			"queues": {
 				"producers": [

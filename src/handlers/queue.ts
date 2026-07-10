@@ -114,7 +114,8 @@ async function processMessage(
 	env: Env,
 	ctx: ExecutionContext
 ): Promise<void> {
-	const { prNumber, title, repoFullName, headSha, checkRunId, prAuthor, prDescription } = message.body;
+	console.log(`[queue-debug] processMessage ENTERED at ${Date.now()}`);
+	const { prNumber, title, repoFullName, headSha, checkRunId, prAuthor, prDescription, deepReview } = message.body;
 
 	logger.info('Processing PR via Container', {
 		prNumber,
@@ -130,11 +131,54 @@ async function processMessage(
 	// ── Dispatch to Container ──
 	// ── Layer 1: Pre-dispatch dedup guard ──
 	// Check DEDUP_KV before token fetch or container DO wake-up.
-	// Dedup hits exit immediately — zero API calls, zero DO lifecycle.
+	// Dedup hits exit immediately — zero API calls, zero DO lifecycle (unless resolving orphan check runs).
 	const dedupKey = `review_completed:${repoFullName}:${prNumber}:${headSha}`;
 	const alreadyCompleted = await env.DEDUP_KV.get(dedupKey).catch(() => null);
-	if (alreadyCompleted === 'true') {
+	let isCompleted = false;
+	if (alreadyCompleted) {
+		if (alreadyCompleted === 'true') {
+			isCompleted = true;
+		} else {
+			try {
+				const parsed = JSON.parse(alreadyCompleted);
+				if (parsed !== null && typeof parsed === 'object' && parsed.completed) {
+					isCompleted = true;
+				}
+			} catch {
+				// Fallback
+			}
+		}
+	}
+
+	if (isCompleted) {
 		logger.info('Dedup hit — review already completed for this headSha, skipping container', { prNumber, headSha });
+
+		// If a new check run was created (e.g. before dedup check occurred in webhook or due to races),
+		// we must resolve it now so it doesn't stay in "in_progress" state.
+		if (checkRunId) {
+			try {
+				let conclusion = 'success';
+				if (alreadyCompleted && alreadyCompleted !== 'true') {
+					try {
+						const parsed = JSON.parse(alreadyCompleted);
+						if (parsed !== null && typeof parsed === 'object' && parsed.conclusion) {
+							conclusion = parsed.conclusion;
+						}
+					} catch {}
+				}
+				const token = await getInstallationToken(env);
+				await updateCheckRun(
+					repoFullName,
+					checkRunId,
+					token,
+					conclusion as any,
+					`✅ PR review already completed for this commit. Conclusion: ${conclusion}. Skipping duplicate execution.`
+				);
+			} catch (chErr) {
+				logger.error('Failed to update check run on queue dedup hit', chErr instanceof Error ? chErr : undefined);
+			}
+		}
+
 		message.ack();
 		return;
 	}
@@ -144,7 +188,7 @@ async function processMessage(
 		token = await getInstallationToken(env);
 	} catch (authErr) {
 		logger.error('Failed to obtain token for Check Run setup', authErr instanceof Error ? authErr : undefined);
-		message.retry();
+		message.ack();
 		return;
 	}
 
@@ -154,7 +198,9 @@ async function processMessage(
 		// Each unique commit hash gets its own DO instance. Old containers
 		// naturally expire via sleepAfter. No alarm state carries over.
 		const containerId = `pr-${repoFullName.replace('/', '-')}-${prNumber}-${headSha}`;
+		console.log(`[queue-debug] Calling getContainer with id=${containerId}`);
 		const container = getContainer(env.REVIEW_CONTAINER, containerId);
+		console.log(`[queue-debug] About to call container.fetch at ${Date.now()}`);
 
 		const response = await withTimeout(
 			async (signal) => {
@@ -171,6 +217,7 @@ async function processMessage(
 							prAuthor,
 							prDescription,
 							checkRunId,
+							deepReview: deepReview ?? false,
 							installationToken: token,
 						}),
 					})
@@ -183,6 +230,7 @@ async function processMessage(
 		if (!response.ok) {
 			const errorBody = await response.text().catch(() => 'unknown');
 			const status = response.status;
+			console.log(`[queue-debug] container.fetch response: status=${status} body=${errorBody.slice(0, 1000)}`);
 			throw new Error(`Container review failed with status ${status}: ${errorBody.slice(0, 500)}`);
 		}
 
@@ -233,7 +281,7 @@ async function processMessage(
 				repoFullName,
 				prNumber,
 				`> ⚠️ **Code Reviewer Agent Error**\n` +
-				`> The automated review container failed unexpectedly. Retrying...\n\n` +
+				`> The automated review container failed unexpectedly.\n\n` +
 				`**Error:** \`${errMsg}\``,
 				token
 			);
@@ -249,7 +297,7 @@ async function processMessage(
 					token,
 					'failure',
 					`## ❌ Review Container Error\n\n**Error:** \`${errMsg}\`\n\n` +
-					`The container failed to execute. Retrying review...`
+					`The container failed to execute. Click "Re-run" to try again.`
 				);
 			} catch {
 				logger.error('Could not update Check Run with error status', undefined, {
@@ -259,6 +307,6 @@ async function processMessage(
 			}
 		}
 
-		message.retry();
+		message.ack();
 	}
 }

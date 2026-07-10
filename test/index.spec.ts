@@ -170,4 +170,25 @@ describe('Code Reviewer Worker', () => {
 	it('exports a queue() handler', () => {
 		expect(typeof worker.queue).toBe('function');
 	});
+
+	// — Idempotency / Duplicate Webhook check —
+	it('POST / with PR already completed in DEDUP_KV returns 200 and skips', async () => {
+		const prPayload = { ...mockPRPayload, action: 'opened' };
+		const dedupKey = `review_completed:org/repo:42:abc123`;
+		await env.DEDUP_KV.put(dedupKey, 'true');
+
+		const request = await createSignedWebhookRequest(
+			prPayload,
+			env.GITHUB_WEBHOOK_SECRET,
+			'pull_request'
+		);
+		const response = await worker.fetch(request, env);
+
+		expect(response.status).toBe(200);
+		const body = await response.json<{ message: string }>();
+		expect(body.message).toContain('completed');
+
+		// Cleanup
+		await env.DEDUP_KV.delete(dedupKey);
+	});
 });
