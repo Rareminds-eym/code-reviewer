@@ -30,8 +30,8 @@ echo ""
 
 
 
-# Test 3: Operational Metrics
-echo "5️⃣  Testing operational metrics..."
+# Test 2: Operational Metrics
+echo "2️⃣  Testing operational metrics..."
 METRICS=$(curl -s "$WORKER_URL/metrics")
 if echo "$METRICS" | grep -q '"uptime"'; then
     echo -e "${GREEN}✅ Operational metrics accessible${NC}"

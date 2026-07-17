@@ -60,131 +60,243 @@ function configCacheKey(repoFullName: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// YAML Parser (Minimal — no external dependencies)
+// YAML Parser (Minimal — no external dependencies, fully generic)
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal YAML parser for .codereview.yml.
+ * Generic, indentation-aware YAML parser for .codereview.yml.
+ *
+ * Builds a proper nested object tree using indentation to determine structure.
+ * Works with any .codereview.yml format — properly indented standard YAML,
+ * flat-format YAML (everything at indent 0), or any mixture.
  *
  * Supports:
  *   - Key-value pairs: `key: value`
  *   - Nested objects via indentation
- *   - Array items (- prefix)
- *   - Comments (#)
- *   - Quoted strings
+ *   - Sequence items (`-` and `*` prefix)
+ *   - Block scalar strings (`|` indicator)
+ *   - Comments (`#`)
+ *   - Quoted strings, booleans, numbers
  *
- * Does NOT support:
- *   - Anchors/aliases
- *   - Multi-line strings (|, >)
- *   - Flow sequences/mappings
- *
- * For a Worker environment, this avoids the 100KB+ js-yaml dependency.
+ * Does NOT support (intentionally — keeps the parser small for Workers/Containers):
+ *   - Anchors/aliases (&anchor / *alias)
+ *   - Folded strings (>)
+ *   - Flow sequences/mappings ([a, b] / {a: b})
+ *   - Multi-document (---)
+ *   - Tags (!!str, !!int)
  */
 function parseSimpleYaml(content: string): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
-    const lines = content.split('\n');
-    const stack: Array<{ indent: number; obj: Record<string, unknown> }> = [
-        { indent: -1, obj: result },
-    ];
-    let currentArray: unknown[] | null = null;
-    let currentArrayKey = '';
+    const root: Record<string, unknown> = {};
+    const lines = content.replace(/\r/g, '').split('\n');
 
-    for (const rawLine of lines) {
-        // Skip empty lines and comments
-        const commentIdx = rawLine.indexOf('#');
-        const line = commentIdx >= 0
-            ? rawLine.substring(0, commentIdx)
-            : rawLine;
+    // Stack tracks nesting context via indentation.
+    // Each entry holds the indent level and the container (object or array) at that level.
+    type StackEntry = { indent: number; container: Record<string, unknown> | unknown[] };
+    const stack: StackEntry[] = [{ indent: -1, container: root }];
 
-        if (line.trim().length === 0) continue;
+    // Block scalar (|) state
+    let mlKey: string | null = null;
+    let mlBaseIndent = 0;
+    let mlLines: string[] = [];
+    let mlTarget: Record<string, unknown> | null = null;
 
-        const indent = line.search(/\S/);
-        const trimmed = line.trim();
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const stripped = line.trimStart();
 
-        // Array item
-        if (trimmed.startsWith('- ')) {
+        // Skip blank lines and whole-line comments (but capture blanks in multiline blocks)
+        if (stripped === '' || stripped.startsWith('#')) {
+            if (mlKey !== null && stripped === '') mlLines.push('');
+            continue;
+        }
+
+        const indent = line.length - stripped.length;
+        const trimmed = stripped;
+
+        // ── Block scalar termination ──────────────────────────────────────
+        // Content of a block scalar must be at indent > the key's indent.
+        // In flat mode (where indent <= key's indent), a block scalar ends
+        // when a line matches a new key-value pair or list item.
+        if (mlKey !== null) {
+            const isNewKey = trimmed.match(/^([\w][\w.-]*):\s*(.*)/);
+            const isNewListItem = trimmed.startsWith('- ') || trimmed.startsWith('* ');
+            if (indent < mlBaseIndent || (indent === mlBaseIndent && (isNewKey || isNewListItem))) {
+                mlTarget![mlKey] = mlLines.join('\n').trim();
+                mlKey = null;
+                mlTarget = null;
+                mlLines = [];
+                // Fall through — this line is NOT part of the block.
+            } else {
+                mlLines.push(line);
+                continue;
+            }
+        }
+
+        // ── Stack management ─────────────────────────────────────────────
+        // In standard YAML, we pop any container at >= current indent.
+        // In flat mode, the container and its children have the same indent.
+        // We only pop the container if the current line is a new section header
+        // (key with empty value, or list item).
+        const isListItem = trimmed.startsWith('- ') || trimmed.startsWith('* ');
+        const tempKv = trimmed.match(/^([\w][\w.-]*):\s*(.*)/);
+        const isHeader = (tempKv && (tempKv[2].trim() === '' || tempKv[2].trim() === '|')) || isListItem;
+
+        if (isListItem) {
+            // Pop entries strictly deeper than this indent
+            while (stack.length > 1 && stack[stack.length - 1].indent > indent) {
+                stack.pop();
+            }
+        } else {
+            const limit = isHeader ? indent : indent + 1;
+            while (stack.length > 1 && stack[stack.length - 1].indent >= limit) {
+                stack.pop();
+            }
+        }
+
+        const parent = stack[stack.length - 1].container;
+
+        // ── Sequence item (- or *) ───────────────────────────────────────
+        if (isListItem) {
             const itemContent = trimmed.substring(2).trim();
 
-            // Check if it's a key-value in an array item
-            const kvMatch = itemContent.match(/^(\w+):\s*(.*)/);
-            if (kvMatch) {
-                // This is a hash item in an array
-                const obj: Record<string, unknown> = {};
-                obj[kvMatch[1]] = parseYamlValue(kvMatch[2]);
-
-                if (!currentArray) {
-                    currentArray = [];
-                    const parent = stack[stack.length - 1].obj;
-                    parent[currentArrayKey] = currentArray;
-                }
-                currentArray.push(obj);
-
-                // Push this object for nested key-values
-                while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-                    stack.pop();
-                }
-                stack.push({ indent: indent + 2, obj });
+            // Find the array to push into.
+            // Parent must be an array (set up when we saw the key with peek-ahead).
+            let arr: unknown[];
+            if (Array.isArray(parent)) {
+                arr = parent;
             } else {
-                // Simple array item
-                if (!currentArray) {
-                    currentArray = [];
-                    const parent = stack[stack.length - 1].obj;
-                    parent[currentArrayKey] = currentArray;
+                // Edge case: the sequence item is at the same indent as its
+                // parent key but the parent was initialised as an object
+                // (no peek-ahead matched). Convert on the fly.
+                // In practice this shouldn't happen with the peek-ahead logic,
+                // so we skip gracefully.
+                continue;
+            }
+
+            // Check if the item starts with a key-value (object element in sequence)
+            const kvMatch = itemContent.match(/^([\w][\w.-]*):\s*(.*)/);
+            if (kvMatch) {
+                const obj: Record<string, unknown> = {};
+                const key = kvMatch[1];
+                const val = kvMatch[2].trim();
+
+                if (val === '|') {
+                    mlKey = key;
+                    mlBaseIndent = indent;
+                    mlLines = [];
+                    mlTarget = obj;
+                } else {
+                    obj[key] = val !== '' ? parseYamlValue(val) : '';
                 }
-                currentArray.push(parseYamlValue(itemContent));
+                arr.push(obj);
+                // Push the object at indent + 1 so that:
+                //   • Children at indent > list-item-indent go into this object
+                //   • The next `- ` at the same indent pops this object but keeps the array
+                stack.push({ indent: indent + 1, container: obj });
+            } else {
+                // Simple scalar item
+                arr.push(parseYamlValue(itemContent));
             }
             continue;
         }
 
-        // Key-value pair
-        const match = trimmed.match(/^([\w.-]+):\s*(.*)/);
-        if (!match) continue;
+        // ── Key-value pair ───────────────────────────────────────────────
+        const kvMatch = trimmed.match(/^([\w][\w.-]*):\s*(.*)/);
+        if (!kvMatch) continue; // Skip lines that aren't parseable
 
-        const [, key, rawValue] = match;
-        const value = rawValue.trim();
+        // Can only add keys to an object, not an array
+        if (Array.isArray(parent)) continue;
+        const parentObj = parent as Record<string, unknown>;
 
-        // Pop stack to find the correct parent based on indentation
-        while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-            stack.pop();
-        }
+        const key = kvMatch[1];
+        const rawVal = kvMatch[2].trim();
 
-        // Reset array tracking when we leave the array context
-        currentArray = null;
+        if (rawVal === '|') {
+            // ── Block scalar indicator ───────────────────────────────────
+            mlKey = key;
+            mlBaseIndent = indent;
+            mlLines = [];
+            mlTarget = parentObj;
+        } else if (rawVal === '') {
+            // ── Empty value → nested object or sequence ──────────────────
+            const nextInfo = peekNextLineInfo(lines, i + 1);
 
-        const parent = stack[stack.length - 1].obj;
-
-        if (value === '' || value === undefined) {
-            // This key has children (nested object or array)
-            const child: Record<string, unknown> = {};
-            parent[key] = child;
-            stack.push({ indent, obj: child });
-            currentArrayKey = key;
+            if (nextInfo) {
+                // If next line has indent > current indent, use next line's indent.
+                // Otherwise (flat mode), use current indent so subsequent key-values at
+                // the same indent level nest inside this container instead of popping it.
+                const childIndent = nextInfo.indent > indent ? nextInfo.indent : indent;
+                if (nextInfo.type === 'sequence') {
+                    const arr: unknown[] = [];
+                    parentObj[key] = arr;
+                    stack.push({ indent: childIndent, container: arr });
+                } else {
+                    const child: Record<string, unknown> = {};
+                    parentObj[key] = child;
+                    stack.push({ indent: childIndent, container: child });
+                }
+            } else {
+                parentObj[key] = '';
+            }
         } else {
-            parent[key] = parseYamlValue(value);
+            // ── Simple scalar value ──────────────────────────────────────
+            parentObj[key] = parseYamlValue(rawVal);
         }
     }
 
-    return result;
+    // Finalize any pending block scalar at EOF
+    if (mlKey !== null && mlTarget) {
+        mlTarget[mlKey] = mlLines.join('\n').trim();
+    }
+
+    return root;
 }
 
+type LineInfo = { indent: number; type: 'sequence' | 'mapping' };
+
+/**
+ * Peek ahead in the line array to determine key details of the next line.
+ * Skips blank lines and comments.
+ */
+function peekNextLineInfo(lines: string[], startIdx: number): LineInfo | null {
+    for (let j = startIdx; j < lines.length; j++) {
+        const line = lines[j];
+        const stripped = line.trimStart();
+        if (stripped === '' || stripped.startsWith('#')) continue;
+
+        const indent = line.length - stripped.length;
+        const type = (stripped.startsWith('- ') || stripped.startsWith('* ')) ? 'sequence' : 'mapping';
+        return { indent, type };
+    }
+    return null;
+}
+
+/**
+ * Parse a raw YAML scalar value into its JS type.
+ * Handles: quoted strings, booleans, numbers, bare strings.
+ */
 function parseYamlValue(raw: string): string | number | boolean {
     const trimmed = raw.trim();
 
+    // Strip inline comments (only if preceded by a space)
+    const commentIdx = trimmed.indexOf(' #');
+    const effective = commentIdx > 0 ? trimmed.substring(0, commentIdx).trim() : trimmed;
+
     // Quoted string
-    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-        (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-        return trimmed.slice(1, -1);
+    if ((effective.startsWith('"') && effective.endsWith('"')) ||
+        (effective.startsWith("'") && effective.endsWith("'"))) {
+        return effective.slice(1, -1);
     }
 
     // Boolean
-    if (trimmed === 'true') return true;
-    if (trimmed === 'false') return false;
+    if (effective === 'true') return true;
+    if (effective === 'false') return false;
 
     // Number
-    const num = Number(trimmed);
-    if (!isNaN(num) && trimmed.length > 0) return num;
+    const num = Number(effective);
+    if (!isNaN(num) && effective.length > 0) return num;
 
-    return trimmed;
+    return effective;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +315,7 @@ const CONFIG_PATHS = ['.codereview.yml', '.github/codereview.yml'];
 export async function fetchRepoConfig(
     repoFullName: string,
     token: string,
-    kvNamespace?: KVNamespace
+    kvNamespace?: any
 ): Promise<RepoReviewConfig | null> {
     // Check KV cache first
     if (kvNamespace) {
@@ -289,50 +401,196 @@ export async function fetchRepoConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Deep Tree Search Utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively collect every occurrence of `key` in a nested tree.
+ * Returns an array of all values found (deepest-first traversal).
+ */
+function deepFindAll(tree: Record<string, unknown>, key: string): unknown[] {
+    const results: unknown[] = [];
+
+    for (const [k, v] of Object.entries(tree)) {
+        if (k === key) results.push(v);
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            results.push(...deepFindAll(v as Record<string, unknown>, key));
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Find the first string value for `key` anywhere in the tree.
+ * Checks `primary` object first (for standard paths), then falls back
+ * to a full tree search (for flat or deeply nested formats).
+ */
+function findString(primary: Record<string, unknown>, tree: Record<string, unknown>, ...keys: string[]): string | undefined {
+    // First pass: check the primary container
+    for (const key of keys) {
+        const val = primary[key];
+        if (typeof val === 'string' && val.trim() !== '') return val.trim().toLowerCase();
+    }
+
+    // Second pass: deep search the entire tree
+    for (const key of keys) {
+        const hits = deepFindAll(tree, key);
+        for (const hit of hits) {
+            if (typeof hit === 'string' && hit.trim() !== '') return hit.trim().toLowerCase();
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * Find the first string value for `key` anywhere in the tree
+ * that also appears in a given validation set.
+ */
+function findValidatedString(
+    primary: Record<string, unknown>,
+    tree: Record<string, unknown>,
+    validSet: ReadonlySet<string>,
+    ...keys: string[]
+): string | undefined {
+    // First pass: check the primary container
+    for (const key of keys) {
+        const val = primary[key];
+        if (typeof val === 'string' && validSet.has(val.trim().toLowerCase())) {
+            return val.trim().toLowerCase();
+        }
+    }
+
+    // Second pass: deep search the entire tree
+    for (const key of keys) {
+        const hits = deepFindAll(tree, key);
+        for (const hit of hits) {
+            if (typeof hit === 'string' && validSet.has(hit.trim().toLowerCase())) {
+                return (hit as string).trim().toLowerCase();
+            }
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * Find an array of strings at `key`, checking primary then full tree.
+ */
+function findStringArray(primary: Record<string, unknown>, tree: Record<string, unknown>, ...keys: string[]): string[] | undefined {
+    for (const key of keys) {
+        const val = primary[key];
+        if (Array.isArray(val)) {
+            const strings = val.filter((v): v is string => typeof v === 'string');
+            if (strings.length > 0) return strings;
+        }
+    }
+
+    for (const key of keys) {
+        const hits = deepFindAll(tree, key);
+        for (const hit of hits) {
+            if (Array.isArray(hit)) {
+                const strings = (hit as unknown[]).filter((v): v is string => typeof v === 'string');
+                if (strings.length > 0) return strings;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Config Validation
 // ---------------------------------------------------------------------------
 
 function validateConfig(raw: Record<string, unknown>): RepoReviewConfig {
     const config: RepoReviewConfig = {};
 
-    if (typeof raw['version'] === 'number') {
-        config.version = raw['version'];
-    }
+    // ── Version ──────────────────────────────────────────────────────────
+    const version = deepFindAll(raw, 'version').find(v => typeof v === 'number');
+    if (typeof version === 'number') config.version = version;
 
-    if (raw['stack'] && typeof raw['stack'] === 'object') {
+    // ── Stack ────────────────────────────────────────────────────────────
+    // The "stack" object is the primary source, but keys may appear at any
+    // depth for flat-format or deeply-nested configs. Deep search handles both.
+    const stackObj = (raw['stack'] && typeof raw['stack'] === 'object' && !Array.isArray(raw['stack']))
+        ? raw['stack'] as Record<string, unknown>
+        : {};
+
+    // Only build a stack config if we can find at least one stack-related key
+    const language = findString(stackObj, raw, 'language', 'languages');
+    const framework = findValidatedString(stackObj, raw, VALID_FRAMEWORKS, 'framework', 'frameworks');
+    const architecture = findString(stackObj, raw, 'architecture', 'architectures');
+    const state = findValidatedString(stackObj, raw, VALID_STATE, 'state', 'client_state');
+    const styling = findValidatedString(stackObj, raw, VALID_STYLING, 'styling', 'framework');
+    const testing = findValidatedString(stackObj, raw, VALID_TESTING, 'testing', 'runner');
+    const forms = findValidatedString(stackObj, raw, VALID_FORMS, 'forms');
+    const validation = findValidatedString(stackObj, raw, VALID_VALIDATION, 'validation', 'schema_validation');
+    const dataFetching = findValidatedString(stackObj, raw, VALID_DATA_FETCHING, 'dataFetching', 'data_fetching', 'server_state');
+
+    // Process ecosystem array — route libraries to their correct stack dimension
+    const ecosystem = findStringArray(stackObj, raw, 'ecosystem', 'ecosystems');
+
+    const hasAnyStack = language || framework || architecture || state || styling ||
+        testing || forms || validation || dataFetching || ecosystem;
+
+    if (hasAnyStack) {
         config.stack = {};
-        const stack = raw['stack'] as Record<string, unknown>;
-        const stringFields = ['language', 'framework', 'state', 'styling', 'architecture', 'testing', 'forms', 'validation', 'dataFetching'];
-        for (const field of stringFields) {
-            if (typeof stack[field] === 'string') {
-                (config.stack as Record<string, string>)[field] = stack[field] as string;
+        if (language) config.stack.language = language;
+        if (framework) config.stack.framework = framework;
+        if (architecture) config.stack.architecture = architecture;
+        if (state) config.stack.state = state;
+        if (styling) config.stack.styling = styling;
+        if (testing) config.stack.testing = testing;
+        if (forms) config.stack.forms = forms;
+        if (validation) config.stack.validation = validation;
+        if (dataFetching) config.stack.dataFetching = dataFetching;
+
+        // Ecosystem fallback — route values to empty dimensions
+        if (ecosystem) {
+            for (const lib of ecosystem) {
+                const normalized = lib.toLowerCase().trim();
+                if (VALID_STATE.has(normalized) && !config.stack.state) config.stack.state = normalized;
+                if (VALID_STYLING.has(normalized) && !config.stack.styling) config.stack.styling = normalized;
+                if (VALID_FORMS.has(normalized) && !config.stack.forms) config.stack.forms = normalized;
+                if (VALID_VALIDATION.has(normalized) && !config.stack.validation) config.stack.validation = normalized;
+                if (VALID_TESTING.has(normalized) && !config.stack.testing) config.stack.testing = normalized;
+                if (VALID_DATA_FETCHING.has(normalized) && !config.stack.dataFetching) config.stack.dataFetching = normalized;
             }
         }
     }
 
-    if (raw['severity'] && typeof raw['severity'] === 'object') {
+    // ── Severity overrides ───────────────────────────────────────────────
+    if (raw['severity'] && typeof raw['severity'] === 'object' && !Array.isArray(raw['severity'])) {
         config.severity = {};
         for (const [key, val] of Object.entries(raw['severity'] as Record<string, unknown>)) {
             if (typeof val === 'string') {
-                config.severity[key] = val;
+                config.severity[key] = val.toLowerCase().trim();
             }
         }
     }
 
+    // ── Rules ────────────────────────────────────────────────────────────
     if (Array.isArray(raw['rules'])) {
         config.rules = [];
         for (const rule of raw['rules']) {
-            if (rule && typeof rule === 'object' && 'name' in rule && 'description' in rule) {
+            if (rule && typeof rule === 'object') {
                 const r = rule as Record<string, unknown>;
-                config.rules.push({
-                    name: String(r['name']),
-                    description: String(r['description']),
-                    ...(typeof r['severity'] === 'string' ? { severity: r['severity'] } : {}),
-                });
+                const ruleName = r['name'] || r['title'];
+                const description = r['description'];
+                if (ruleName && description) {
+                    config.rules.push({
+                        name: String(ruleName),
+                        description: String(description),
+                        ...(typeof r['severity'] === 'string' ? { severity: r['severity'].toLowerCase().trim() } : {}),
+                    });
+                }
             }
         }
     }
 
+    // ── Ignore patterns ──────────────────────────────────────────────────
     if (Array.isArray(raw['ignore'])) {
         config.ignore = raw['ignore'].filter((g): g is string => typeof g === 'string');
     }
@@ -348,8 +606,8 @@ function validateConfig(raw: Record<string, unknown>): RepoReviewConfig {
 const VALID_LANGUAGES: ReadonlySet<string> = new Set(['typescript', 'javascript', 'python', 'go', 'rust', 'java', 'kotlin', 'ruby', 'php', 'csharp', 'swift', 'dart']);
 const VALID_FRAMEWORKS: ReadonlySet<string> = new Set(['react', 'nextjs', 'vue', 'nuxt', 'angular', 'svelte', 'solid', 'express', 'fastify', 'nestjs', 'koa', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber']);
 const VALID_STATE: ReadonlySet<string> = new Set(['zustand', 'redux', 'jotai', 'recoil', 'pinia', 'mobx']);
-const VALID_STYLING: ReadonlySet<string> = new Set(['tailwind', 'css-modules', 'styled-components', 'emotion', 'vanilla-extract']);
-const VALID_ARCH: ReadonlySet<string> = new Set(['fsd', 'clean-architecture', 'mvc', 'hexagonal']);
+const VALID_STYLING: ReadonlySet<string> = new Set(['tailwind', 'tailwindcss', 'css-modules', 'styled-components', 'emotion', 'vanilla-extract']);
+const VALID_ARCH: ReadonlySet<string> = new Set(['fsd', 'feature-sliced-design', 'clean-architecture', 'mvc', 'hexagonal']);
 const VALID_FORMS: ReadonlySet<string> = new Set(['react-hook-form', 'formik']);
 const VALID_VALIDATION: ReadonlySet<string> = new Set(['zod', 'yup', 'joi', 'valibot', 'pydantic']);
 const VALID_TESTING: ReadonlySet<string> = new Set(['vitest', 'jest', 'pytest', 'go-test', 'mocha']);

@@ -70,7 +70,9 @@ Bind the newly generated KV namespace IDs under the `env.dev` block inside `wran
 				"CLIQ_BOT_NAME": "codereviewbot-dev",
 				"CLIQ_CHANNEL_ID": "prweb-dev",
 				"CLIQ_DB_NAME": "githubusermap-dev",
-				"ENABLE_WEB_SEARCH": "true"
+				"ENABLE_WEB_SEARCH": "true",
+				"ENABLE_DUAL_AGENT": "false",
+				"BUILD_CHECK_NAME": "Cloudflare Pages"
 			},
 			"kv_namespaces": [
 				{
@@ -190,7 +192,7 @@ curl -X POST http://localhost:8787/ \
 * Injects God nodes (highly connected hubs) as context for review coordinators.
 
 ### 6.3 Stage 1 Persona Review (Claude Sonnet 4)
-* Runs Claude Sonnet 4 (`claude-sonnet-4-20250514`) as the primary reviewer.
+* Runs Claude Sonnet (claude-sonnet-4-6) as the primary reviewer.
 * Invokes three personas concurrently in parallel (Architect, SRE, Security).
 * Enforces the **YAGNI (Ponytail) Validation Ladder** (Rung 1: Criticality, Rung 2: Existential checks, Rung 3: Stdlib usage, Rung 4: Surgical fix) and a **Zero-Trust Comments Policy** (direct verification of code, treating inline doc assertions as untrusted).
 * Tracks a hard **100k Token ceiling** (`MAX_STAGE1_TOKENS`); stops reviews if exceeded.

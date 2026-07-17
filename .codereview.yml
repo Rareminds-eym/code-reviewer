@@ -1,0 +1,1431 @@
+# ============================================================================
+
+# PROJECT ARCHITECTURE AND ENFORCEMENT RULES
+
+# ============================================================================
+
+# This file defines the approved technology stack, directory responsibilities,
+
+# FSD import boundaries, frontend/backend separation, security requirements,
+
+# state-management rules, validation rules, and review standards.
+
+#
+
+# These rules must be followed by developers, AI coding assistants, reviewers,
+
+# CI pipelines, and automated code-generation tools.
+
+# ============================================================================
+
+stack:
+language: typescript
+language_version: "5.5.3"
+strict_mode: true
+
+framework: react
+framework_version: "18.3.1"
+
+bundler: vite
+bundler_version: "5.4.2"
+
+architecture: feature-sliced-design
+
+routing:
+library: react-router-dom
+version: "7.9.4"
+type: spa-client-routing
+
+backend:
+platform: cloudflare-pages-functions
+workers_allowed: false
+deployment_model: serverless-pages-functions
+
+state_management:
+client_state: zustand
+client_state_version: "5.0.8"
+server_state: tanstack-query
+server_state_version: "5.90.3"
+
+database:
+provider: supabase
+version: "2.57.4"
+direct_auth_allowed: false
+allowed_usage:
+- database
+- realtime
+- storage
+
+authentication:
+frontend_client: "@rareminds-eym/auth-client"
+backend_core: "@rareminds-eym/auth-core"
+direct_supabase_auth_allowed: false
+
+styling:
+framework: tailwindcss
+version: "3.4.1"
+component_primitives: radix-ui
+animations: framer-motion
+
+forms_and_validation:
+schema_validation: zod
+
+ui:
+charting: recharts
+
+integrations:
+ai: openai
+payments: razorpay
+
+testing:
+runner: vitest
+runner_version: "1.6.1"
+component_testing: react-testing-library
+
+# ============================================================================
+
+# APPROVED PROJECT STRUCTURE
+
+# ============================================================================
+
+structure: |
+lms/
+├── .github/
+│   ├── workflows/
+│   ├── CODEOWNERS
+│   └── ISSUE_TEMPLATE/
+│
+├── .husky/
+├── .vscode/
+├── .npmrc
+│
+├── docs/
+│
+├── public/
+│   └── assets/
+│       ├── icons/
+│       ├── images/
+│       ├── fonts/
+│       └── favicon/
+│
+├── src/
+│   ├── app/
+│   │   ├── layouts/
+│   │   ├── providers/
+│   │   ├── router/
+│   │   │   └── guards/
+│   │   └── styles/
+│   │
+│   ├── pages/
+│   ├── widgets/
+│   ├── features/
+│   ├── entities/
+│   ├── shared/
+│   │   ├── api/
+│   │   ├── config/
+│   │   ├── hooks/
+│   │   ├── lib/
+│   │   ├── schemas/
+│   │   ├── store/
+│   │   ├── types/
+│   │   └── ui/
+│   │
+│   └── main.tsx
+│
+├── functions/
+│   ├── middleware/
+│   ├── schemas/
+│   └── shared/
+│
+├── scripts/
+│
+├── .env.example
+├── .gitignore
+├── eslint.config.js
+├── tsconfig.json
+├── vite.config.ts
+├── package.json
+└── README.md
+
+# ============================================================================
+
+# FSD LAYER ORDER
+
+# ============================================================================
+
+fsd_layer_order:
+
+* app
+* pages
+* widgets
+* features
+* entities
+* shared
+
+fsd_import_direction: |
+Imports must flow from higher layers to lower layers only.
+
+app      -> pages, widgets, features, entities, shared
+pages    -> widgets, features, entities, shared
+widgets  -> features, entities, shared
+features -> entities, shared
+entities -> shared
+shared   -> shared only
+
+# ============================================================================
+
+# CUSTOM RULES
+
+# ============================================================================
+
+rules:
+
+# --------------------------------------------------------------------------
+
+# AUTHENTICATION
+
+# --------------------------------------------------------------------------
+
+* category: authentication
+  title: "No direct Supabase Auth usage"
+  severity: critical
+  description: |
+  Never use `supabase.auth.*` anywhere in the frontend.
+
+  Authentication must be handled only through:
+
+  * `@rareminds-eym/auth-client` on the frontend
+  * `@rareminds-eym/auth-core` on the backend
+
+  Allowed frontend examples:
+
+  * `useAuthStore.getState().login(email, password)`
+  * `ssoClient.signup()`
+  * `ssoClient.fetch()`
+
+  Disallowed examples:
+
+  * `supabase.auth.signInWithPassword()`
+  * `supabase.auth.signUp()`
+  * `supabase.auth.getSession()`
+  * `supabase.auth.refreshSession()`
+
+  Reason:
+  Direct Supabase Auth bypasses the centralized SSO architecture and can
+  create inconsistent sessions, token handling, and authorization behavior.
+
+* category: authentication
+  title: "Use approved authentication middleware"
+  severity: critical
+  description: |
+  Every authenticated Cloudflare Pages Function must use the approved
+  authentication wrapper.
+
+  Approved methods:
+
+  * `withAuth`
+  * middleware provided by `@rareminds-eym/auth-core`
+
+  Never:
+
+  * manually decode JWTs
+  * manually verify JWT signatures
+  * manually parse authentication cookies
+  * manually extract and trust user IDs from request bodies
+  * duplicate authentication logic inside individual endpoints
+
+  Authentication must be handled centrally through backend middleware.
+
+* category: authentication
+  title: "Frontend route guards are not security boundaries"
+  severity: critical
+  description: |
+  Files under `src/app/router/guards/` exist only for user experience and
+  client-side navigation control.
+
+  They may:
+
+  * redirect unauthenticated users
+  * hide restricted routes
+  * redirect users by role
+  * prevent unauthorized UI rendering
+
+  They must not be treated as actual authorization enforcement.
+
+  All permissions must be verified again inside backend middleware.
+
+# --------------------------------------------------------------------------
+
+# FRONTEND AND BACKEND SEPARATION
+
+# --------------------------------------------------------------------------
+
+* category: architecture
+  title: "Strict frontend-backend separation"
+  severity: critical
+  description: |
+  Frontend and backend are separate runtime environments.
+
+  Frontend:
+
+  * `src/`
+
+  Backend:
+
+  * `functions/`
+
+  Frontend code must never import backend code.
+
+  Disallowed:
+
+  * importing from `functions/` inside `src/`
+  * importing middleware into React components
+  * importing backend database helpers into frontend code
+  * importing backend validation logic directly into frontend code
+
+  Backend code must never import frontend code.
+
+  Disallowed:
+
+  * importing React components into Pages Functions
+  * importing frontend Zustand stores into backend functions
+  * importing frontend FSD entities into backend handlers
+
+  Communication must happen only through HTTP APIs.
+
+* category: architecture
+  title: "Use apiClient or ssoClient for backend communication"
+  severity: high
+  description: |
+  Frontend API requests must use the approved API client.
+
+  Approved:
+
+  * `apiGet`
+  * `apiPost`
+  * `apiPut`
+  * `apiPatch`
+  * `apiDelete`
+  * `ssoClient.fetch()`
+
+  Location:
+
+  * `src/shared/api/`
+
+  Plain `fetch()` calls to project backend endpoints are not allowed.
+
+  Reason:
+  Direct fetch calls may bypass:
+
+  * authentication headers
+  * token refresh
+  * organization context
+  * retry logic
+  * standard error handling
+  * request tracing
+  * centralized response parsing
+
+* category: architecture
+  title: "Shared types must not cross runtime boundaries by direct import"
+  severity: high
+  description: |
+  Types must not be imported directly between `src/` and `functions/`.
+
+  Disallowed:
+
+  * frontend importing types from `functions/`
+  * backend importing types from `src/`
+
+  Shared contract types must either:
+
+  * be duplicated intentionally
+  * be generated from an API schema
+  * be extracted to a dedicated package such as `@rareminds-eym/types`
+
+# --------------------------------------------------------------------------
+
+# APP LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "app is only for application initialization"
+  severity: high
+  description: |
+  `src/app/` must contain only application-level setup and composition.
+
+  Allowed:
+
+  * layouts
+  * providers
+  * router configuration
+  * route guards
+  * global styles
+  * application bootstrap logic
+
+  Disallowed:
+
+  * business entities
+  * course state
+  * user profile state
+  * form schemas
+  * domain APIs
+  * reusable buttons
+  * feature-specific hooks
+  * domain-specific business logic
+
+  Business state must live in:
+
+  * `features/*/model/`
+  * `entities/*/model/`
+
+* category: fsd
+  title: "No generic security folder under app"
+  severity: high
+  description: |
+  Do not create `src/app/security/` as a generic security dumping ground.
+
+  Frontend route protection belongs in:
+
+  * `src/app/router/guards/`
+
+  Real security enforcement belongs in:
+
+  * `functions/middleware/`
+
+  Client-side code is visible and bypassable and must not be treated as a
+  trusted security boundary.
+
+# --------------------------------------------------------------------------
+
+# PAGES LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "Pages contain route-level composition only"
+  severity: high
+  description: |
+  `src/pages/` contains complete route-level screens.
+
+  Pages may:
+
+  * compose widgets
+  * compose features
+  * use entities
+  * use shared utilities
+  * connect route params to page composition
+
+  Pages should not:
+
+  * contain reusable domain logic
+  * define generic UI components
+  * contain direct database access
+  * contain large reusable sections that belong in widgets
+  * own reusable business actions that belong in features
+
+  A page should orchestrate lower layers rather than implement everything
+  directly.
+
+* category: fsd
+  title: "Do not place generic buttons inside pages"
+  severity: medium
+  description: |
+  Generic reusable UI components must not be created inside a page folder.
+
+  Violation:
+
+  * `pages/dashboard/ui/Button.tsx`
+
+  Correct:
+
+  * `shared/ui/button/`
+
+  Exception:
+  A page-specific component may remain inside the page if it is not reused
+  and represents only page composition.
+
+# --------------------------------------------------------------------------
+
+# WIDGETS LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "Widgets represent large reusable UI compositions"
+  severity: high
+  description: |
+  `src/widgets/` is for large, reusable page sections.
+
+  Examples:
+
+  * header
+  * sidebar
+  * dashboard summary section
+  * course list section
+  * navigation panel
+
+  Widgets may compose:
+
+  * features
+  * entities
+  * shared UI
+
+  Widgets must not:
+
+  * contain route definitions
+  * import pages
+  * contain backend logic
+  * become generic component libraries
+
+# --------------------------------------------------------------------------
+
+# FEATURES LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "Features represent user actions"
+  severity: high
+  description: |
+  `src/features/` must contain business actions or user interactions.
+
+  Good feature examples:
+
+  * enroll in course
+  * search courses
+  * submit assignment
+  * reset password
+  * upload document
+  * update profile
+  * mark attendance
+
+  Features may contain:
+
+  * api
+  * model
+  * schemas
+  * ui
+  * lib
+  * config
+
+  Features should be named as actions or use cases.
+
+* category: fsd
+  title: "Do not place generic UI components inside features"
+  severity: high
+  description: |
+  Generic reusable UI components must not be created inside a feature.
+
+  Violation:
+
+  * `features/authentication/ui/Button.tsx`
+  * `features/course-search/ui/Input.tsx`
+  * `features/enroll-course/ui/Modal.tsx`
+
+  Correct:
+
+  * `shared/ui/button/`
+  * `shared/ui/input/`
+  * `shared/ui/modal/`
+
+  A component may remain inside a feature only when it is specific to that
+  feature.
+
+  Valid examples:
+
+  * `features/authentication/ui/LoginForm`
+  * `features/enroll-course/ui/EnrollCourseButton`
+  * `features/course-search/ui/CourseSearchField`
+
+  Rule:
+  If the component can be reused without understanding the feature, it
+  belongs in `shared/ui`.
+
+* category: fsd
+  title: "Features must not import other feature slices directly"
+  severity: high
+  description: |
+  One feature should not directly import another feature.
+
+  Violation:
+
+  * `features/course-search` importing `features/enroll-course`
+
+  Correct approach:
+  Compose both features inside a higher layer such as:
+
+  * widgets
+  * pages
+  * app
+
+  Reason:
+  Direct feature-to-feature dependencies create tight coupling and make
+  features difficult to reuse or remove independently.
+
+# --------------------------------------------------------------------------
+
+# ENTITIES LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "Entities represent domain concepts"
+  severity: high
+  description: |
+  `src/entities/` must contain business-domain concepts.
+
+  Examples:
+
+  * user
+  * session
+  * course
+  * assignment
+  * assessment
+  * organization
+  * enrollment
+
+  Entities may contain:
+
+  * model
+  * api
+  * schemas
+  * ui
+  * lib
+
+  Entities must not:
+
+  * import features
+  * import widgets
+  * import pages
+  * contain route composition
+  * contain feature-specific action flows
+
+* category: fsd
+  title: "Entity UI must represent the entity"
+  severity: medium
+  description: |
+  Entity UI components must directly represent the domain entity.
+
+  Valid:
+
+  * CourseCard
+  * UserAvatar
+  * AssignmentStatus
+  * OrganizationBadge
+
+  Invalid:
+
+  * LoginForm
+  * EnrollButton
+  * SubmitAssignmentForm
+
+  Action-oriented UI belongs in features.
+
+# --------------------------------------------------------------------------
+
+# SHARED LAYER
+
+# --------------------------------------------------------------------------
+
+* category: fsd
+  title: "Shared must remain business-agnostic"
+  severity: critical
+  description: |
+  `src/shared/` contains generic reusable infrastructure.
+
+  Allowed:
+
+  * API client
+  * generic hooks
+  * generic utilities
+  * environment configuration
+  * common schemas
+  * generic Zustand helpers
+  * shared types
+  * reusable UI components
+
+  Disallowed:
+
+  * course business logic
+  * authentication business rules
+  * enrollment state
+  * user-specific business state
+  * page-specific components
+  * organization-specific permissions
+
+  If code contains domain terminology, it likely does not belong in shared.
+
+* category: fsd
+  title: "shared/ui contains only generic UI components"
+  severity: high
+  description: |
+  `src/shared/ui/` contains reusable, domain-independent UI primitives.
+
+  Examples:
+
+  * Button
+  * Input
+  * Modal
+  * Dialog
+  * Table
+  * Loader
+  * Badge
+  * Tooltip
+  * Select
+  * Card
+
+  Components must not include business behavior.
+
+  Violation:
+
+  * `shared/ui/EnrollCourseButton`
+  * `shared/ui/ApproveLearnerButton`
+  * `shared/ui/SubscriptionUpgradeModal`
+
+  Those belong in feature slices.
+
+* category: fsd
+  title: "shared/config is for reusable frontend configuration only"
+  severity: medium
+  description: |
+  `src/shared/config/` may contain:
+
+  * public environment values
+  * route constants
+  * pagination defaults
+  * application constants
+  * public feature flags
+  * supported file-size limits
+
+  It must not contain:
+
+  * private secrets
+  * service-role keys
+  * private API keys
+  * backend credentials
+  * database connection strings
+
+  Every value under `src/` is potentially visible in the browser.
+
+* category: fsd
+  title: "shared/store contains utilities, not domain state"
+  severity: high
+  description: |
+  `src/shared/store/` may contain:
+
+  * Zustand middleware helpers
+  * persistence adapters
+  * reusable store factories
+  * generic selectors
+  * storage abstractions
+
+  It must not contain:
+
+  * auth session state
+  * user profile state
+  * course state
+  * enrollment state
+  * organization state
+  * subscription state
+
+  Actual state belongs in the owning entity or feature model.
+
+# --------------------------------------------------------------------------
+
+# ZUSTAND
+
+# --------------------------------------------------------------------------
+
+* category: state-management
+  title: "Place Zustand stores near the owning domain"
+  severity: high
+  description: |
+  Zustand stores must live close to the feature or entity that owns them.
+
+  Correct:
+
+  * `entities/session/model/`
+  * `entities/user/model/`
+  * `features/course-search/model/`
+  * `features/enroll-course/model/`
+
+  Incorrect:
+
+  * one large global store
+  * all stores inside `app/store`
+  * all domain state inside `shared/store`
+
+  State must be split by ownership and responsibility.
+
+* category: state-management
+  title: "Do not duplicate TanStack Query data in Zustand"
+  severity: high
+  description: |
+  Remote server data should be managed by TanStack Query.
+
+  Use TanStack Query for:
+
+  * API responses
+  * server caching
+  * loading states
+  * request retries
+  * invalidation
+  * background refresh
+
+  Use Zustand for:
+
+  * client-only state
+  * local workflow state
+  * persistent UI preferences
+  * temporary cross-component state
+
+  Do not copy API response data into Zustand unless there is a clear,
+  documented reason.
+
+# --------------------------------------------------------------------------
+
+# ZOD
+
+# --------------------------------------------------------------------------
+
+* category: validation
+  title: "Use Zod for runtime validation"
+  severity: high
+  description: |
+  TypeScript types do not validate runtime data.
+
+  Zod must be used for:
+
+  * form validation
+  * API request payload validation
+  * query parameter validation
+  * route parameter validation
+  * external API response validation
+  * environment variable validation
+
+* category: validation
+  title: "Place Zod schemas near their ownership"
+  severity: high
+  description: |
+  Feature-specific schemas:
+
+  * `features/*/schemas/`
+
+  Entity-specific schemas:
+
+  * `entities/*/schemas/`
+
+  Generic schemas:
+
+  * `shared/schemas/`
+
+  Backend request schemas:
+
+  * `functions/schemas/`
+
+  Do not place every schema in one central frontend folder when it belongs
+  to a specific feature or entity.
+
+* category: validation
+  title: "Backend validation is mandatory"
+  severity: critical
+  description: |
+  Frontend validation improves user experience but is not a security
+  boundary.
+
+  Every backend endpoint must validate:
+
+  * request body
+  * route params
+  * query params
+  * headers when relevant
+
+  Validation must happen before database or business operations.
+
+# --------------------------------------------------------------------------
+
+# BACKEND FUNCTIONS
+
+# --------------------------------------------------------------------------
+
+* category: backend
+  title: "functions contains backend-only code"
+  severity: critical
+  description: |
+  `functions/` runs in Cloudflare Pages Functions.
+
+  It may contain:
+
+  * API handlers
+  * middleware
+  * backend schemas
+  * backend-only utilities
+  * database clients
+  * authorization checks
+  * payment integration
+  * secure environment access
+
+  It must not contain:
+
+  * React components
+  * frontend hooks
+  * frontend Zustand stores
+  * browser-only code
+  * DOM APIs
+
+* category: backend
+  title: "Use middleware for cross-cutting backend concerns"
+  severity: high
+  description: |
+  `functions/middleware/` must contain reusable backend request protection.
+
+  Examples:
+
+  * authentication
+  * authorization
+  * role checks
+  * permission checks
+  * request validation
+  * CORS
+  * rate limiting
+  * request tracing
+  * centralized error handling
+
+  Endpoints must not reimplement these concerns independently.
+
+* category: backend
+  title: "Do not expose secrets to frontend"
+  severity: critical
+  description: |
+  Secrets must exist only in Cloudflare environment bindings or backend
+  runtime configuration.
+
+  Never expose:
+
+  * Supabase service-role keys
+  * Razorpay secrets
+  * OpenAI private keys
+  * JWT private keys
+  * database credentials
+  * SSO backend secrets
+
+  Never prefix private values with `VITE_`.
+
+# --------------------------------------------------------------------------
+
+# PUBLIC ASSETS
+
+# --------------------------------------------------------------------------
+
+* category: assets
+  title: "Static assets belong in public/assets"
+  severity: medium
+  description: |
+  Static files must be placed under:
+
+  * `public/assets/icons/`
+  * `public/assets/images/`
+  * `public/assets/fonts/`
+  * `public/assets/favicon/`
+
+  Do not duplicate static asset folders under `src/shared/assets/`.
+
+  Assets should be referenced using absolute public paths.
+
+# --------------------------------------------------------------------------
+
+# API DESIGN
+
+# --------------------------------------------------------------------------
+
+* category: api
+  title: "API calls belong near domain ownership"
+  severity: high
+  description: |
+  Generic HTTP infrastructure belongs in:
+
+  * `src/shared/api/`
+
+  Domain API wrappers belong in:
+
+  * `features/*/api/`
+  * `entities/*/api/`
+
+  Example:
+
+  * generic request client -> `shared/api`
+  * fetch course data -> `entities/course/api`
+  * enroll in course -> `features/enroll-course/api`
+
+* category: api
+  title: "Do not call Supabase directly from pages or UI components"
+  severity: critical
+  description: |
+  React pages and components must not perform direct Supabase queries.
+
+  Disallowed:
+
+  * direct `supabase.from()` inside pages
+  * direct database calls inside widgets
+  * direct queries inside shared UI
+  * direct Supabase access inside route guards
+
+  Database access must happen through backend APIs.
+
+# --------------------------------------------------------------------------
+
+# PUBLIC API AND IMPORTS
+
+# --------------------------------------------------------------------------
+
+* category: imports
+  title: "Use slice public APIs"
+  severity: high
+  description: |
+  Every feature, entity, widget, and page slice should expose intended
+  exports through an `index.ts`.
+
+  Preferred:
+
+  * `import { CourseCard } from "@/entities/course"`
+
+  Avoid:
+
+  * `import { CourseCard } from "@/entities/course/ui/CourseCard"`
+
+  Deep imports increase coupling and expose internal implementation details.
+
+* category: imports
+  title: "No upward imports"
+  severity: critical
+  description: |
+  Lower FSD layers must never import higher layers.
+
+  Violations:
+
+  * shared importing entities
+  * entities importing features
+  * features importing widgets
+  * widgets importing pages
+  * pages importing app
+
+  Such imports must fail linting and CI.
+
+# --------------------------------------------------------------------------
+
+# COMPONENT PLACEMENT
+
+# --------------------------------------------------------------------------
+
+* category: components
+  title: "Place components based on responsibility"
+  severity: high
+  description: |
+  Use the following placement rules:
+
+  Generic visual primitive:
+
+  * `shared/ui/`
+
+  Domain representation:
+
+  * `entities/*/ui/`
+
+  User action:
+
+  * `features/*/ui/`
+
+  Large page section:
+
+  * `widgets/*/ui/`
+
+  Complete routed screen:
+
+  * `pages/*/ui/`
+
+  Application-wide layout:
+
+  * `app/layouts/`
+
+* category: components
+  title: "Button placement rule"
+  severity: high
+  description: |
+  Generic Button:
+
+  * `shared/ui/button/`
+
+  Domain display button without business action:
+
+  * generally still use shared Button and configure it through props
+
+  Business-action button:
+
+  * feature UI
+
+  Examples:
+
+  Correct:
+
+  * `shared/ui/button/`
+  * `features/enroll-course/ui/`
+  * `features/delete-course/ui/`
+
+  Incorrect:
+
+  * generic Button inside a feature
+  * EnrollCourseButton inside shared UI
+  * reusable Button inside pages
+
+  Rule:
+  The visual primitive lives in shared.
+  The business action wrapper lives in the feature.
+
+# --------------------------------------------------------------------------
+
+# TESTING
+
+# --------------------------------------------------------------------------
+
+* category: testing
+  title: "Test behavior at the owning layer"
+  severity: medium
+  description: |
+  Shared UI:
+
+  * rendering
+  * accessibility
+  * interaction behavior
+
+  Entities:
+
+  * entity representation
+  * selectors
+  * data transformations
+
+  Features:
+
+  * user actions
+  * validation
+  * state transitions
+  * API interactions
+
+  Pages:
+
+  * composition
+  * route-level behavior
+
+  Backend:
+
+  * authentication
+  * validation
+  * authorization
+  * error responses
+  * database integration
+
+# --------------------------------------------------------------------------
+
+# LOGGING AND DEBUGGING
+
+# --------------------------------------------------------------------------
+
+* category: logging
+  title: "No console usage in production branches"
+  severity: critical
+  description: |
+  Console statements must not exist in production branches (main, master, production, prod).
+
+  Disallowed in production branches:
+
+  * console.log()
+  * console.info()
+  * console.warn()
+  * console.error()
+  * console.debug()
+  * console.trace()
+  * console.dir()
+  * console.table()
+
+  Use a proper logging utility instead:
+
+  * `src/shared/lib/logger`
+
+  Allowed in development and staging branches:
+
+  * console.* statements are permitted for debugging
+
+  CI/CD must:
+
+  * block merges to production branches if console statements are detected
+  * allow console statements in feature/* and develop/* branches
+  * remove or replace console statements during production builds
+
+  Example ESLint rule:
+  ```json
+  "no-console": process.env.NODE_ENV === "production" ? "error" : "warn"
+  ```
+
+* category: logging
+  title: "Use proper logging utility"
+  severity: high
+  description: |
+  All logging must go through a centralized logger utility.
+
+  Location:
+
+  * `src/shared/lib/logger` (frontend)
+  * `functions/shared/logger` (backend)
+
+  The logger must:
+
+  * support different log levels (debug, info, warn, error)
+  * automatically disable non-error logs in production
+  * format logs consistently
+  * optionally send logs to external services (Sentry, LogRocket, DataDog)
+  * support structured logging with metadata
+  * sanitize sensitive data automatically
+
+  Frontend usage:
+  ```typescript
+  import { logger } from '@/shared/lib/logger';
+
+  logger.debug('User interaction', { action: 'click', element: 'button' });
+  logger.info('API request completed', { endpoint: '/courses', duration: 120 });
+  logger.warn('Deprecated function used', { function: 'oldMethod' });
+  logger.error('API request failed', { error, endpoint: '/courses' });
+  ```
+
+  Backend usage:
+  ```typescript
+  import { logger } from '../shared/logger';
+
+  logger.info('Request received', { method: req.method, path: req.url });
+  logger.error('Database error', { error: error.message, query });
+  ```
+
+* category: logging
+  title: "Environment-based logging"
+  severity: high
+  description: |
+  Logging behavior must adapt to the environment.
+
+  Production:
+
+  * only error and critical warnings
+  * no debug or info logs
+  * logs sent to monitoring service
+  * no sensitive data in logs
+  * minimal stack traces
+
+  Staging:
+
+  * error, warning, and info logs
+  * debug logs allowed
+  * detailed error traces
+  * request/response logging
+
+  Development:
+
+  * all log levels enabled
+  * console output allowed
+  * detailed stack traces
+  * request/response body logging
+
+  The logger must check `NODE_ENV`, `VITE_ENV`, or `MODE` to determine behavior.
+
+  Implementation:
+  ```typescript
+  const isDevelopment = import.meta.env.DEV;
+  const isProduction = import.meta.env.PROD;
+
+  if (!isProduction) {
+    logger.debug('Development log', data);
+  }
+  ```
+
+* category: logging
+  title: "No sensitive data in logs"
+  severity: critical
+  description: |
+  Never log sensitive information regardless of environment.
+
+  Never log:
+
+  * passwords (plain or hashed)
+  * API keys and secrets
+  * tokens (JWT, session, refresh, CSRF)
+  * credit card numbers or CVV
+  * personal identification numbers
+  * social security numbers
+  * full email addresses in production
+  * database credentials
+  * private keys
+  * authentication headers
+
+  Safe alternatives:
+
+  * log user IDs instead of emails
+  * log masked tokens (first/last 4 characters only)
+  * log error types without sensitive context
+  * sanitize request/response bodies before logging
+  * redact sensitive fields automatically
+
+  Bad:
+  ```typescript
+  logger.info('User login', {
+    email: 'user@example.com',
+    password: 'secret123',
+    token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+  });
+  ```
+
+  Good:
+  ```typescript
+  logger.info('User login', {
+    userId: '123',
+    success: true,
+    token: 'eyJh...XVCJ9' // masked
+  });
+  ```
+
+* category: logging
+  title: "Structured logging with context"
+  severity: medium
+  description: |
+  Use structured logging instead of string concatenation or template literals.
+
+  Bad:
+  ```typescript
+  logger.info('User ' + userId + ' enrolled in course ' + courseId);
+  logger.info(`Error: ${error.message}`);
+  console.log('API call failed for ' + endpoint);
+  ```
+
+  Good:
+  ```typescript
+  logger.info('User enrolled in course', { userId, courseId, timestamp: Date.now() });
+  logger.error('API call failed', { endpoint, error: error.message, statusCode });
+  logger.warn('Rate limit approaching', { userId, requestCount, limit });
+  ```
+
+  Benefits:
+
+  * easier to search and filter logs
+  * better integration with log aggregation tools (Elasticsearch, Splunk)
+  * consistent log format
+  * automatic JSON serialization
+  * queryable metadata
+
+* category: logging
+  title: "Remove debugging artifacts before committing"
+  severity: medium
+  description: |
+  Do not commit temporary debugging code.
+
+  Remove before committing:
+
+  * console.log for debugging
+  * debugger statements
+  * commented-out console statements
+  * test console outputs
+  * alert() or confirm() dialogs
+  * temporary console.table() or console.dir()
+
+  Use pre-commit hooks to catch these:
+
+  * Husky
+  * lint-staged
+  * ESLint no-console rule
+
+  Exceptions:
+
+  * intentional error logging through logger utility
+  * production error handlers
+  * critical system warnings
+
+# --------------------------------------------------------------------------
+
+# CODE REVIEW
+
+# --------------------------------------------------------------------------
+
+* category: review
+  title: "Reject ambiguous dumping-ground folders"
+  severity: high
+  description: |
+  Do not create vague folders such as:
+
+  * helpers
+  * common
+  * misc
+  * utils
+  * services
+  * managers
+  * security
+
+  unless their scope is clearly defined.
+
+  Prefer specific ownership:
+
+  * shared/lib/date
+  * shared/api
+  * features/authentication
+  * entities/session
+  * functions/middleware
+
+* category: review
+  title: "Do not create empty architecture for hypothetical future use"
+  severity: medium
+  description: |
+  Do not create unnecessary nested directories before they are needed.
+
+  Create feature and entity slices when actual functionality exists.
+
+  Base architecture should define boundaries without generating large
+  numbers of empty folders.
+
+# ============================================================================
+
+# ARCHITECTURAL DECISION SUMMARY
+
+# ============================================================================
+
+summary:
+frontend:
+root: src
+architecture: feature-sliced-design
+security_boundary: false
+
+backend:
+root: functions
+runtime: cloudflare-pages-functions
+security_boundary: true
+
+state:
+server_state: tanstack-query
+client_state: zustand
+business_state_location:
+- features/*/model
+- entities/*/model
+
+validation:
+library: zod
+frontend_validation: user-experience
+backend_validation: mandatory
+
+assets:
+root: public/assets
+
+primary_rule: |
+Code must be placed according to ownership and responsibility.
+
+```
+Generic reusable code belongs in shared.
+Domain objects belong in entities.
+User actions belong in features.
+Large compositions belong in widgets.
+Route screens belong in pages.
+Application setup belongs in app.
+Security enforcement belongs in functions.
+```

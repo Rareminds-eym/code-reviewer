@@ -26,13 +26,13 @@ graph TD
     subgraph Isolate ["Edge Worker Isolate Tier (Cloudflare Isolate)"]
         Edge -->|1. HMAC Verify| Auth[Webhook Signature Auth]
         Edge -->|2. Push| Queue[code-reviewer-queue]
-        Edge -->|3. Coord| DO[RateLimiterDO (Durable Object)]
+        Edge -->|3. Rate Limit| RL[KV Rate Limiter]
         Edge -->|4. Log & Track| Cost[Cost Circuit Breaker]
         Queue -->|5. De-queue| Consumer[Queue Consumer]
         Consumer -->|6. Sync Review DO| Sandbox[Container DO Sandbox]
         Sandbox -->|7. Ack Success| Queue
     end
-    class Isolate,Edge,Auth,Queue,DO,Cost,Consumer worker;
+    class Isolate,Edge,Auth,Queue,RL,Cost,Consumer worker;
 
     %% Container Sandbox Tier
     subgraph ContainerSandbox ["Container Sandbox (Hardened Docker Container)"]
@@ -101,7 +101,7 @@ graph TD
 
 - **Git Checkout**: Bare mirror at `/mnt/git-cache/{repo}.git` with `--reference` clone, `--depth=50`, `--filter=blob:none` to prevent ENOSPC, and `--single-branch`.
 - **Build & SAST Gate**: Runs build command, short-circuits on failure with Cliq alert. `/tmp` cleanup after build via `sh -c 'rm -rf /tmp/*'`.
-- **Stage 1**: Claude Sonnet 4 (`claude-sonnet-4-20250514`) with 3 concurrent persona calls.
+- **Stage 1**: Claude Sonnet (`claude-sonnet-4-6`) with 3 concurrent persona calls.
 - **Stage 2**: Gemini 2.0 Flash verification with smart dedup against existing PR comments.
 
 ---
@@ -149,7 +149,7 @@ Validates each finding context, checks team policies, verifies fix code correctn
 
 | Stage | Provider | Model | Purpose |
 |-------|----------|-------|---------|
-| Stage 1 | Claude | `claude-sonnet-4-20250514` ($3/$15 per 1M tokens) | Deep reasoning, 3 personas |
+| Stage 1 | Claude | `claude-sonnet-4-6` ($3/$15 per 1M tokens) | Deep reasoning, 3 personas |
 | Stage 2 | Gemini | `gemini-2.0-flash` ($0.15/$0.60 per 1M tokens) | Low-cost verification |
 
 ---

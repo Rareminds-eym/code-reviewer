@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFindings } from '../src/lib/llm/parse-findings';
+import { parseFindings } from '../container/src/lib/llm/parse-findings';
 import { buildGlobalContext, classifyFiles } from '../src/lib/github';
 import type { GitHubPRFile } from '../src/types/github';
 

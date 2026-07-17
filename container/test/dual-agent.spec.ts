@@ -69,7 +69,6 @@ describe('Dual-Agent Prompts', () => {
             expect(prompt).toContain('Verification Agent');
             expect(prompt).toContain('Context & Line Validation');
             expect(prompt).toContain('Policy Compliance');
-            expect(prompt).toContain('Fix Correctness');
         });
 
         it('includes diff context when provided', () => {

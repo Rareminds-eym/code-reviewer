@@ -6,12 +6,11 @@ Built with battle-tested patterns from Netflix, AWS, Google SRE, and Stripe for 
 
 ## 🏆 Industrial-Grade Features
 
-- **🚦 Distributed Rate Limiting** - Global coordination via Durable Objects with adaptive AIMD algorithm
+- **🚦 Distributed Rate Limiting** - KV-backed distributed rate limiters to prevent IP and API credential abuse
 - **💰 Cost Circuit Breaker** - Real-time budget tracking with hourly/daily limits and automatic circuit opening
-- **🎯 Adaptive Concurrency** - Dynamic 1-5 concurrent requests based on success/error rates
-- **🛡️ Graceful Degradation** - Automatic service level adjustment (FULL/DEGRADED/DISABLED)
-- **🔄 Retry with Backoff** - Exponential backoff with jitter for transient errors
-- **📊 Full Observability** - Admin endpoints for rate limiter, cost, concurrency, and retry metrics
+- **🔄 Retry with Backoff** - Exponential backoff with jitter for transient provider failures
+- **📊 Full Observability** - Health check, usage statistics, and Prometheus metrics endpoints active at the edge worker
+- **📦 Isolated Sandbox Compute** - Secure Docker containers running tree-sitter AST parses and static analysis tools
 
 ---
 
@@ -160,20 +159,17 @@ Industrial-grade cost controls with real-time budget tracking and automatic circ
 
 ## 📊 Monitoring & Observability
 
-Access real-time metrics via admin endpoints (requires `USAGE_API_KEY`):
+Access real-time metrics and system state via edge endpoints:
 
 ```bash
-# Rate limiter metrics
-curl -H "Authorization: Bearer $API_KEY" \
-  https://your-worker.workers.dev/admin/rate-limiter-metrics/claude
+# General health check
+curl https://your-worker.workers.dev/health
 
-# Adaptive concurrency metrics
-curl -H "Authorization: Bearer $API_KEY" \
-  https://your-worker.workers.dev/admin/concurrency-metrics
+# Prometheus metrics
+curl https://your-worker.workers.dev/metrics?format=prometheus
 
-# Retry statistics
-curl -H "Authorization: Bearer $API_KEY" \
-  https://your-worker.workers.dev/admin/retry-metrics
+# Historical usage dashboard
+curl -u "username:password" https://your-worker.workers.dev/dashboard
 ```
 
 See [ADMIN_ENDPOINTS.md](./ADMIN_ENDPOINTS.md) for complete API reference.
@@ -190,7 +186,6 @@ See [ADMIN_ENDPOINTS.md](./ADMIN_ENDPOINTS.md) for complete API reference.
 ### After Industrial-Grade Implementation
 - ✅ 529 error rate: <5%
 - ✅ Chunk failure rate: <5%
-- ✅ Adaptive rate limiting prevents 429s
+- ✅ KV-backed rate limiting prevents 429s
 - ✅ Cost circuit breaker prevents overruns
-- ✅ Adaptive concurrency (1-5 based on load)
-- ✅ Graceful degradation on errors
+- ✅ Ephemeral sandbox container checkouts isolate compute

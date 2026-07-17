@@ -74,8 +74,8 @@ GitHub Webhook → Worker → Queue → Container → LLM APIs → GitHub PR Rev
 - Hourly spend > $50
 
 **Immediate Actions**:
-1. Check current spend
-2. Enable global degradation if over budget
+1. Check current spend via edge usage API
+2. Pause queue processing or suspend webhook deliveries if over budget
 3. Identify high-cost repositories
 
 **Long-term Fix**:
@@ -111,12 +111,12 @@ GitHub Webhook → Worker → Queue → Container → LLM APIs → GitHub PR Rev
 **When to use**: Critical incident, runaway costs, security breach
 
 Steps:
-1. Enable global degradation (Level 4 - Disabled)
-2. Verify reviews are disabled
+1. Suspend webhook deliveries in the GitHub App settings
+2. Verify reviews are paused (incoming webhook deliveries return 503 or fail delivery)
 3. Notify team
 4. Investigate root cause
 5. Fix issue
-6. Re-enable service
+6. Re-enable GitHub App webhook deliveries
 
 ### Emergency Rollback
 

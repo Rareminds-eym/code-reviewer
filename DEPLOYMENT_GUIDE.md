@@ -4,7 +4,7 @@
 
 - ✅ All integrations complete (verified)
 - ✅ TypeScript compilation successful
-- ✅ Wrangler.jsonc configured with RateLimiterDO
+- ✅ Wrangler.jsonc configured with ReviewContainer
 - ✅ Cloudflare account with Workers enabled
 
 ## Step 1: Pre-Deployment Checklist
@@ -43,73 +43,35 @@ npx wrangler deploy
 # 1. Health check
 curl https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/health
 
-# 2. Rate limiter metrics (requires API key)
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/rate-limiter-metrics/claude
+# 2. Operational Metrics
+curl https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/metrics
 
-# 3. Concurrency metrics
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/concurrency-metrics
-
-# 4. Retry metrics
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/retry-metrics
+# 3. Prometheus Metrics
+curl https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/metrics?format=prometheus
 ```
 
 ## Step 4: Monitor Initial Behavior
 
-### Watch Rate Limiter
+### Watch Operational Metrics
 
 ```bash
-# Monitor rate limiter for Claude
-watch -n 5 'curl -s -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/rate-limiter-metrics/claude | jq'
+# Monitor global request stats
+watch -n 5 'curl -s https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/metrics | jq'
 ```
 
 Expected initial state:
 ```json
 {
+  "uptime": 1000,
+  "version": "1.0.0",
   "provider": "claude",
-  "requestsPerMinute": 50,
-  "inputTokensPerMinute": 40000,
-  "outputTokensPerMinute": 8000,
-  "currentUtilization": 0,
-  "queueLength": 0,
-  "totalRequests": 0,
-  "totalErrors": 0,
-  "adaptiveMultiplier": 1.0
-}
-```
-
-### Watch Adaptive Concurrency
-
-```bash
-# Monitor concurrency adjustments
-watch -n 5 'curl -s -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/concurrency-metrics | jq'
-```
-
-Expected initial state:
-```json
-{
-  "chunkReview": {
-    "currentConcurrency": 2,
-    "successCount": 0,
-    "errorCount": 0,
-    "errorRate": 0,
-    "totalAdjustments": 0,
-    "lastAdjustmentTime": 0,
-    "lastAdjustmentReason": "initialization"
+  "requests": {
+    "total": 0,
+    "success": 0,
+    "errors": 0
   },
-  "synthesis": {
-    "currentConcurrency": 1,
-    "successCount": 0,
-    "errorCount": 0,
-    "errorRate": 0,
-    "totalAdjustments": 0,
-    "lastAdjustmentTime": 0,
-    "lastAdjustmentReason": "initialization"
-  }
+  "errorRate": 0,
+  "avgResponseTime": 0
 }
 ```
 
@@ -227,55 +189,18 @@ After 24 hours, verify:
 ```bash
 # Verify binding exists
 npx wrangler deployments list
-# Look for RATE_LIMITER in bindings
-
-# Check DO state
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/rate-limiter-metrics/claude
+# Look for REVIEW_CONTAINER in bindings
 ```
 
-**Fix**: Verify wrangler.jsonc has RateLimiterDO binding and migration
-
-### Issue: Concurrency stuck at 1
-
-**Symptoms**: Concurrency never increases
-
-**Check**:
-```bash
-# Check error rate
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/concurrency-metrics
-```
-
-**Cause**: High error rate preventing increases (need 10 consecutive successes)
-
-**Fix**: Investigate and fix underlying errors first
+**Fix**: Check your Anthropic/Gemini API key limits and ensure the keys are correctly set via `wrangler secret put`.
 
 ### Issue: Cost breaker blocking requests
 
 **Symptoms**: "Cost budget exceeded" errors
 
-**Check**:
-```bash
-# Check current spend
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/cost-metrics
-```
+**Check**: Check container execution logs via `wrangler tail` to check if a single PR's token usage has exceeded the cost thresholds defined in `container/src/config/constants.ts`.
 
-**Fix**: Increase budget limits in `src/lib/cost-circuit-breaker.ts` or wait for hourly reset
-
-### Issue: Service level stuck in DEGRADED
-
-**Symptoms**: Reviews are limited/skipping synthesis
-
-**Check**: System health metrics
-
-**Fix**: 
-```bash
-# Clear service level override
-curl -X DELETE -H "Authorization: Bearer YOUR_API_KEY" \
-  https://code-reviewer.YOUR_SUBDOMAIN.workers.dev/admin/service-level/override
-```
+**Fix**: Increase token thresholds in `container/src/config/constants.ts` or wait for the hourly reset window to pass.
 
 ## Post-Deployment Tasks
 

@@ -27,25 +27,24 @@ Complete guide to the Industrial-Grade Code Reviewer system.
 - **[README.md#Architecture](./README.md#architecture-dual-compute-model)** - Dual-compute model overview
 
 ### Industrial-Grade Systems
-1. **Distributed Rate Limiter** - Token bucket with AIMD, Durable Objects
+1. **Distributed Rate Limiter** - KV-backed distributed token bucket rate limiting
 2. **Cost Circuit Breaker** - Real-time budget tracking, hourly/daily limits
-3. **Adaptive Concurrency** - AIMD algorithm, 1-5 concurrent requests
-4. **Service Levels** - Graceful degradation (FULL/DEGRADED/DISABLED)
-5. **Retry with Backoff** - Exponential backoff with jitter
-6. **OpenTelemetry Tracing** - Distributed tracing infrastructure
+3. **Retry with Backoff** - Exponential backoff with jitter
+4. **OpenTelemetry Tracing** - Distributed tracing infrastructure
+5. **Isolated Sandbox Compute** - Secure Docker containers running tree-sitter AST parses and static analysis tools
 
-## �� Monitoring & Metrics
+## 📊 Monitoring & Metrics
 
-### Admin Endpoints
+### Edge Endpoints
 ```bash
-# Rate limiter metrics
-GET /admin/rate-limiter-metrics/{provider}
+# General health check
+GET /health
 
-# Adaptive concurrency metrics
-GET /admin/concurrency-metrics
+# Prometheus metrics
+GET /metrics
 
-# Retry statistics
-GET /admin/retry-metrics
+# Operational telemetry dashboard
+GET /dashboard
 ```
 
 See [ADMIN_ENDPOINTS.md](./ADMIN_ENDPOINTS.md) for complete API reference.
@@ -61,8 +60,7 @@ npx wrangler deploy
 ./scripts/verify-deployment.sh https://your-worker.workers.dev YOUR_API_KEY
 
 # 3. Monitor
-curl -H "Authorization: Bearer $API_KEY" \
-  https://your-worker.workers.dev/admin/concurrency-metrics
+curl https://your-worker.workers.dev/metrics
 ```
 
 ### Troubleshooting
