@@ -34,6 +34,12 @@ export const MAX_FINDINGS_PER_CHUNK = 50;
  */
 export const GLOBAL_CONTEXT_BUDGET_CHARS = 8_000;
 
+/** Hard upper bound on the graphify knowledge-graph context injected into prompts. */
+export const MAX_GRAPH_CONTEXT_CHARS = 6_000;
+
+/** Wall-clock budget for graphify extraction/update (matches prior 120s timeout). */
+export const GRAPHIFY_BUDGET_MS = 120_000;
+
 /**
  * Tier 1: Maximum files that get FULL content fetched (patch + raw file).
  * Increased from 15 to 100 on Cloudflare Workers Paid Plan (1000 subrequests ceiling).

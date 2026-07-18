@@ -113,6 +113,36 @@ export async function buildBlastRadius(workDir: string, changedFiles: string[]):
 }
 
 /**
+ * Cheap symbol extraction: parse ONLY the changed files and return their symbol
+ * definitions. This is the inexpensive half of {@link buildBlastRadius} — it does
+ * NOT perform the repo-wide reverse-dependency scan.
+ *
+ * Used on every review to (a) seed/rank graphify's PR-scoped `affected` queries
+ * and (b) summarize changed symbols in the prompt. The expensive reverse-dependency
+ * blast radius is delegated to graphify (authoritative) and only computed here via
+ * {@link buildBlastRadius} as a fallback when graphify is unavailable (R8).
+ */
+export async function extractChangedSymbols(workDir: string, changedFiles: string[]): Promise<SymbolInfo[]> {
+	await ensureParser();
+
+	const parser = new Parser();
+	parser.setLanguage(TypeScript);
+
+	const changedSymbols: SymbolInfo[] = [];
+	for (const file of changedFiles) {
+		if (!isTypeScriptFile(file)) continue;
+		try {
+			const content = await readFile(join(workDir, file), 'utf-8');
+			const tree = parser.parse(content);
+			changedSymbols.push(...extractSymbols(tree.rootNode, file));
+		} catch (err) {
+			console.warn(`[ast-graph] Failed to parse ${file}:`, err);
+		}
+	}
+	return changedSymbols;
+}
+
+/**
  * Extract symbol definitions (functions, classes, interfaces, types) from an AST node.
  */
 function extractSymbols(rootNode: any, file: string): SymbolInfo[] {

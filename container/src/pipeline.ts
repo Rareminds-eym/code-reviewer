@@ -1,12 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
-import { readFile } from 'node:fs/promises';
+
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { execa } from 'execa';
 import { cloneRepository, cleanup } from './git-ops.js';
-import { buildBlastRadius } from './ast-graph.js';
+import { buildBlastRadius, extractChangedSymbols } from './ast-graph.js';
 import { runStaticAnalysis } from './static-analysis.js';
-import type { ReviewRequest, ReviewResponse, ReviewMetrics } from './types.js';
+import type { ReviewRequest, ReviewResponse, ReviewMetrics, BlastRadius } from './types.js';
 import { KvProxy } from './kv-proxy.js';
 import { getInstallationToken } from './lib/github-auth.js';
 import {
@@ -38,7 +37,12 @@ import { fetchPRCommentThreads, applySmartDedup } from './lib/smart-dedup.js';
 import {
 	DEFAULT_AI_PROVIDER,
 	MAX_CHUNK_CHARS,
+	MAX_GRAPH_CONTEXT_CHARS,
+	GRAPHIFY_BUDGET_MS,
 } from './config/constants.js';
+import * as graphifyIntegration from './lib/graphify/index.js';
+import type { GraphifyResult } from './lib/graphify/index.js';
+import { outParentFor as graphifyOutParentFor } from './lib/graphify/extraction-runner.js';
 import type { Env } from './types/env.js';
 import type { LLMCallUsage } from './types/usage.js';
 import type { InlineReviewComment } from './lib/github.js';
@@ -224,51 +228,6 @@ async function withTimeout<T>(
 }
 
 /**
- * Graphify Indexing — runs the Graphify AST knowledge graph builder
- * on the checked-out workspace. Injects the graph data as context
- * for the review coordinators.
- */
-async function runGraphifyIndexing(
-	workDir: string,
-	signal?: AbortSignal
-): Promise<{ graphJson: any | null; graphContext: string }> {
-	console.log(`[graphify] Running graphify AST indexing...`);
-	try {
-		const result = await execa('graphify', ['.', '--output', join(workDir, 'graphify-out')], {
-			cwd: workDir,
-			timeout: 120_000,
-			cancelSignal: signal,
-			reject: false,
-		});
-
-		if (result.exitCode !== 0) {
-			console.warn(`[graphify] graphify exited with code ${result.exitCode}: ${result.stderr?.slice(0, 500)}`);
-			return { graphJson: null, graphContext: '' };
-		}
-
-		const graphJsonPath = join(workDir, 'graphify-out', 'graph.json');
-		let graphJson: any = null;
-		try {
-			const content = await readFile(graphJsonPath, 'utf-8');
-			graphJson = JSON.parse(content);
-		} catch (err) {
-			console.warn(`[graphify] Failed to read graph.json:`, err);
-			return { graphJson: null, graphContext: '' };
-		}
-
-		const nodeCount = graphJson.nodes?.length || 0;
-		const edgeCount = graphJson.edges?.length || 0;
-
-		const graphContext = `\n\n## Graphify AST Knowledge Graph\n- Total nodes: ${nodeCount}\n- Total edges: ${edgeCount}\n- Changed files indexed: ${graphJson.metadata?.changedFiles?.length || 0}\n- God nodes (highly connected): ${(graphJson.godNodes || []).map((n: any) => n.name).join(', ')}\n`;
-		console.log(`[graphify] Graph generated: ${nodeCount} nodes, ${edgeCount} edges`);
-		return { graphJson, graphContext };
-	} catch (err) {
-		console.warn(`[graphify] graphify execution failed:`, err);
-		return { graphJson: null, graphContext: '' };
-	}
-}
-
-/**
  * The core container-side review pipeline. Orchestrates the full sequence:
  * 1. Validate environment
  * 2. Fetch files from GitHub Pull Request API
@@ -374,6 +333,9 @@ export async function runReviewPipeline(
 	const totalStart = Date.now();
 	const startTime = new Date().toISOString();
 	const llmCalls: LLMCallUsage[] = [];
+	// Graphify result is captured here so its degradation notice (R12) can be
+	// appended to the posted review — including from the outer sandbox-error path.
+	let graphifyResult: GraphifyResult | undefined;
 	const provider = env.AI_PROVIDER ?? DEFAULT_AI_PROVIDER;
 	const modelName = getModelName(provider);
 	console.log(`[pipeline-debug] Effective provider='${provider}' model='${modelName}' env.AI_PROVIDER='${env.AI_PROVIDER}'`);
@@ -461,13 +423,17 @@ export async function runReviewPipeline(
 		// Filter allowedFiles to only include files that exist on disk in the clone (exclude deleted files)
 		const existingAllowedFiles = allowedFiles.filter(f => existsSync(join(workDir, f)));
 
-		console.log(`[${requestId}] Building AST dependency graph via Tree-Sitter...`);
-		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🌳 Building Deep Dependency Graph via Tree-Sitter AST...');
+		// Cheap, always-on: extract symbols from the CHANGED files only (used to
+		// seed/rank graphify queries and summarize the PR). The expensive repo-wide
+		// reverse-dependency scan is delegated to graphify and only run as a
+		// fallback below when graphify is unusable (R8).
+		console.log(`[${requestId}] Extracting changed symbols via Tree-Sitter...`);
+		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🌳 Extracting changed symbols via Tree-Sitter AST...');
 		const parseStart = Date.now();
-		const blastRadius = await buildBlastRadius(workDir, existingAllowedFiles);
+		const changedSymbols = await extractChangedSymbols(workDir, existingAllowedFiles);
 		metrics.parseTimeMs = Date.now() - parseStart;
-		metrics.symbolsTracked = blastRadius.changedSymbols.length + blastRadius.impactedSymbols.length;
-		console.log(`[${requestId}] AST parsed in ${metrics.parseTimeMs}ms — ${metrics.symbolsTracked} symbols tracked`);
+		metrics.symbolsTracked = changedSymbols.length;
+		console.log(`[${requestId}] AST symbols extracted in ${metrics.parseTimeMs}ms — ${changedSymbols.length} changed symbols`);
 
 		console.log(`[${requestId}] Running security & linting tools...`);
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🛡️ Executing Ground-Truth Security & Linting Tools...');
@@ -478,7 +444,61 @@ export async function runReviewPipeline(
 
 		// ── Graphify AST Knowledge Graph Indexing ──
 		await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🗺️ Indexing codebase AST via Graphify...');
-		const { graphContext: graphifyContext } = await runGraphifyIndexing(workDir, signal);
+		// Keep the CheckRun fresh during the (up to GRAPHIFY_BUDGET_MS) extraction
+		// window so the review does not appear stalled (Requirement 3.5). graphify
+		// runs as a child process, so this interval fires freely on the event loop.
+		const graphifyHeartbeat = setInterval(() => {
+			void updateCheckRunProgress(
+				request.repoFullName,
+				request.checkRunId,
+				token,
+				'🗺️ Indexing codebase AST via Graphify...'
+			).catch((e: unknown) => {
+				const msg = e instanceof Error ? e.message : String(e);
+				console.warn(`Graphify heartbeat failed: ${msg}`);
+			});
+		}, 30_000);
+		// Blast radius: graphify is authoritative when it produced a usable graph.
+		// Only fall back to the expensive tree-sitter reverse-dependency scan when
+		// graphify was unusable (R8.2), so we never lose a blast-radius signal.
+		let blastRadius: BlastRadius = {
+			changedFiles: existingAllowedFiles,
+			impactedFiles: [],
+			changedSymbols,
+			impactedSymbols: [],
+		};
+		let graphifyContext: string;
+		// The heartbeat wraps BOTH graphify extraction AND the (possibly slow,
+		// repo-wide) tree-sitter fallback scan, so the CheckRun never appears
+		// stalled during either phase; cleared once in the finally.
+		try {
+			graphifyResult = await graphifyIntegration.run(
+				workDir,
+				existingAllowedFiles,
+				changedSymbols,
+				signal,
+				MAX_GRAPH_CONTEXT_CHARS,
+				GRAPHIFY_BUDGET_MS
+			);
+			graphifyContext = graphifyResult.context.render();
+
+			// Fall back ONLY when graphify produced no usable graph (R8.1). Keying
+			// on `context.available` (not on `degradationReason`) means a salvaged
+			// code-only graph — e.g. a `missing-key` outcome on the semantic path
+			// that still wrote a graph and ran `affected` — is treated as
+			// authoritative and does NOT trigger the redundant repo-wide scan.
+			const graphifyUsable = graphifyResult.context.available;
+			if (!graphifyUsable) {
+				console.warn(`[${requestId}] Graphify graph unavailable (${graphifyResult.telemetry.degradationReason ?? 'unknown'}); falling back to tree-sitter blast radius`);
+				await updateCheckRunProgress(request.repoFullName, request.checkRunId, token, '🌳 Computing dependency blast radius via Tree-Sitter fallback...');
+				const fbStart = Date.now();
+				blastRadius = await buildBlastRadius(workDir, existingAllowedFiles);
+				metrics.parseTimeMs += Date.now() - fbStart;
+				metrics.symbolsTracked = blastRadius.changedSymbols.length + blastRadius.impactedSymbols.length;
+			}
+		} finally {
+			clearInterval(graphifyHeartbeat);
+		}
 
 		// Map static analysis outputs to standardized ReviewFindings
 		const mappedStaticFindings = staticFindings.map(f => ({
@@ -491,7 +511,13 @@ export async function runReviewPipeline(
 			category: 'clean-code' as const,
 		}));
 
-		const containerBlastRadiusText = `\n\n## Container Blast Radius Analysis\nChanged files: ${blastRadius.changedFiles.length}\nImpacted files: ${blastRadius.impactedFiles.length}\nChanged symbols: ${blastRadius.changedSymbols.map((s) => `${s.kind} ${s.name}`).join(', ')}` + graphifyContext;
+		// Only surface the tree-sitter "Impacted files" line when the fallback
+		// actually ran; otherwise graphify's section (in graphifyContext) is the
+		// authoritative blast radius and a "0" here would be misleading.
+		const impactedLine = blastRadius.impactedFiles.length > 0
+			? `\nImpacted files: ${blastRadius.impactedFiles.length}`
+			: '';
+		const containerBlastRadiusText = `\n\n## Container Blast Radius Analysis\nChanged files: ${existingAllowedFiles.length}${impactedLine}\nChanged symbols: ${changedSymbols.map((s) => `${s.kind} ${s.name}`).join(', ')}` + graphifyContext;
 
 		// ── Step 5: Build review chunks ──
 		const { chunks, chunkFileMap, globalContext, allFiles: reviewableFiles, pluginFindings } =
@@ -941,6 +967,17 @@ export async function runReviewPipeline(
 
 		const reviewEvent = verdict === 'approve' ? 'APPROVE' as const : verdict === 'request_changes' ? 'REQUEST_CHANGES' as const : 'COMMENT' as const;
 
+		// ── Surface any graphify degradation in the posted review (R12) ──
+		// Appended (never replaces content); wrapped so it can't block posting.
+		try {
+			const graphNotice = graphifyResult?.context.reviewNotice();
+			if (graphNotice) {
+				finalReview += `\n\n---\n> ℹ️ ${graphNotice}`;
+			}
+		} catch (noticeErr) {
+			console.warn(`[${requestId}] Failed to append graphify notice (non-fatal):`, noticeErr);
+		}
+
 		try {
 			await postPRReview(
 				request.repoFullName,
@@ -1044,6 +1081,12 @@ export async function runReviewPipeline(
 
 		// Update Check Run with failure details
 		if (request.checkRunId) {
+			// Append any graphify degradation notice even on the sandbox-error path (R12.5).
+			let graphNoticeSuffix = '';
+			try {
+				const graphNotice = graphifyResult?.context.reviewNotice();
+				if (graphNotice) graphNoticeSuffix = `\n\n---\n> ℹ️ ${graphNotice}`;
+			} catch { /* non-fatal */ }
 			try {
 				await updateCheckRun(
 					request.repoFullName,
@@ -1051,7 +1094,8 @@ export async function runReviewPipeline(
 					token,
 					'failure',
 					`## ❌ Review Pipeline Sandbox Error\n\n**Error:** \`${errMsg}\`\n\n` +
-					`Please close and reopen the PR to trigger another review.`
+					`Please close and reopen the PR to trigger another review.` +
+					graphNoticeSuffix
 				);
 			} catch (chRunErr) {
 				console.error('Failed to update Check Run on crash:', chRunErr);
@@ -1062,6 +1106,9 @@ export async function runReviewPipeline(
 	} finally {
 		// ── Clean sandbox environment ──
 		await cleanup(workDir);
+		// Also remove the out-of-repo graphify output dir (`<workDir>-gfx`) so a
+		// reused container does not accumulate stale graphs (R3.8b).
+		await cleanup(graphifyOutParentFor(workDir));
 	}
 }
 
