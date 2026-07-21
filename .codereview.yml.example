@@ -330,6 +330,39 @@ notes: |
   - Performance (Core Web Vitals)
 
 # ============================================================================
+# PIPELINE OVERRIDES (hybrid two-tier review)
+# ============================================================================
+# Per-repo overrides for the hybrid review pipeline. A repo may RAISE strictness
+# (pick a heavier track, turn stages on) here. IMPORTANT: repo config can never
+# LOWER a security-driven `deep` escalation — when a PR touches security-sensitive
+# paths/labels it is reviewed at `deep` regardless of the `track` set below
+# (the security escalation is a floor that config can only raise, never weaken).
+#
+# All fields are optional; anything omitted falls back to the environment default
+# (every new stage defaults OFF). Accepts either a `pipeline:` or `review:` key.
+
+pipeline:
+  # Requested Review_Track: fast | full | deep.
+  #   fast → posts static + MAP findings directly (skips graphify, personas,
+  #          consensus, and the agentic verifier).
+  #   full → standard review; personas run only if the dual-agent stage is on.
+  #   deep → all phases enabled with the largest agentic budgets.
+  # A request below `deep` is ignored for security-escalated PRs (floor).
+  track: full
+
+  # Toggle the container-side triage / track finalization.
+  enableTriage: true
+
+  # Toggle the supply-chain dependency audit (lockfiles, Dockerfiles, CI workflows).
+  enableDependencyAudit: true
+
+  # Toggle the (zero-cost) consensus confidence router over LLM findings.
+  enableConsensus: true
+
+  # Toggle the bounded agentic verifier (LLM tool-use loop over uncertain findings).
+  enableAgenticVerifier: false
+
+# ============================================================================
 # VERSION
 # ============================================================================
 # Track configuration version for auditing

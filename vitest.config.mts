@@ -2,6 +2,11 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 
 export default defineWorkersConfig({
 	test: {
+		// Edge (Cloudflare Worker) tests only. Container tests live in
+		// `container/test/` and run under the Node environment via
+		// `npm test --prefix container` — they must not run in the Workers pool.
+		include: ['test/**/*.spec.ts'],
+		exclude: ['**/node_modules/**', '**/dist/**', 'container/**'],
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: './wrangler.jsonc' },

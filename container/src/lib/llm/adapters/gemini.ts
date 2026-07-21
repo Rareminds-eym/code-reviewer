@@ -1,4 +1,4 @@
-import { LLMProviderAdapter, type LLMProviderConfig, type LLMResponse, type ChunkReviewRequest, type SynthesisRequest } from '../adapter';
+import { LLMProviderAdapter, type LLMProviderConfig, type LLMResponse, type ChunkReviewRequest, type SynthesisRequest, type ToolDef, type ToolCall, type ToolLoopStep, type ToolMessage } from '../adapter';
 import { MODELS } from '../../../config/constants';
 import { logger } from '../../logger';
 import { handleLLMErrorResponse } from '../error-handler';
@@ -396,6 +396,199 @@ ${payload}`;
 
         return { content, usage, webSearchMetadata: synthWebSearchMetadata };
     }
+
+    // ---------------------------------------------------------------------------
+    // Tool-calling capability (R8) — powers the Agentic Verifier loop
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Gemini supports native function calling via the current generateContent
+     * SDK (R8.2). Function declarations map to the neutral `ToolDef` shape.
+     */
+    override supportsToolCalling(): boolean {
+        return true;
+    }
+
+    /**
+     * Run one step of a tool-calling loop against the Gemini generateContent API
+     * (R8.1). Returns any `functionCall` parts as `toolCalls`, any text parts as
+     * `finalText`, and always surfaces per-completion token usage (R8.3).
+     *
+     * Gemini function calls have no native id, so a stable synthetic id is
+     * generated (`<name>-<index>`); tool results are keyed back by tool name.
+     */
+    override async runToolStep(
+        messages: ToolMessage[],
+        tools: ToolDef[],
+        signal?: AbortSignal
+    ): Promise<ToolLoopStep> {
+        const systemText = messages
+            .filter(m => m.role === 'system')
+            .map(m => m.content ?? '')
+            .filter(Boolean)
+            .join('\n\n');
+        const contents = messages
+            .filter(m => m.role !== 'system')
+            .map(toGeminiContent);
+
+        const functionDeclarations = tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema,
+        }));
+
+        const requestBody: Record<string, unknown> = {
+            contents,
+            generationConfig: {
+                maxOutputTokens: this.maxTokens,
+                temperature: this.temperature,
+            },
+        };
+        if (systemText) {
+            requestBody.systemInstruction = { parts: [{ text: systemText }] };
+        }
+        if (functionDeclarations.length) {
+            requestBody.tools = [{ functionDeclarations }];
+        }
+
+        const estimatedInputTokens = Math.ceil(
+            (systemText.length + JSON.stringify(contents).length + JSON.stringify(functionDeclarations).length) / 4
+        );
+        const estimatedOutputTokens = this.maxTokens;
+
+        if (this.rateLimiter) {
+            const rateLimitResult = await this.rateLimiter.acquire({
+                estimatedInputTokens,
+                estimatedOutputTokens,
+                timeoutMs: 30000,
+            });
+            if (!rateLimitResult.allowed) {
+                throw new Error(`Rate limit exceeded: retry after ${rateLimitResult.retryAfterMs}ms`);
+            }
+        }
+
+        if (this.costBreaker) {
+            const estimatedCost = (this.costBreaker.constructor as any).estimateCost(
+                'gemini',
+                estimatedInputTokens,
+                estimatedOutputTokens
+            );
+            const budgetCheck = await this.costBreaker.checkBudget(estimatedCost);
+            if (!budgetCheck.allowed) {
+                throw new Error(`Cost budget exceeded: ${budgetCheck.reason}`);
+            }
+        }
+
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-goog-api-key': this.config.apiKey,
+                },
+                body: JSON.stringify(requestBody),
+                signal,
+            }
+        );
+
+        if (!response.ok) {
+            if (this.rateLimiter && (response.status === 429 || response.status === 529)) {
+                await this.rateLimiter.reportError(response.status);
+            }
+            await handleLLMErrorResponse(response, 'Gemini');
+        }
+
+        const data = await response.json() as {
+            candidates?: Array<{
+                content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args?: unknown } }> };
+                finishReason?: string;
+            }>;
+            usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+        };
+
+        const parts = data.candidates?.[0]?.content?.parts ?? [];
+
+        const toolCalls: ToolCall[] = parts
+            .map((p, i) => ({ p, i }))
+            .filter(({ p }) => !!p.functionCall)
+            .map(({ p, i }) => ({
+                id: `${p.functionCall!.name}-${i}`,
+                name: p.functionCall!.name,
+                arguments: p.functionCall!.args ?? {},
+            }));
+
+        const finalText = parts
+            .filter(p => typeof p.text === 'string')
+            .map(p => p.text as string)
+            .join('\n')
+            .trim();
+
+        const usage: TokenUsage = {
+            inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+            outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+            totalTokens: (data.usageMetadata?.promptTokenCount ?? 0) + (data.usageMetadata?.candidatesTokenCount ?? 0),
+        };
+
+        if (this.rateLimiter) {
+            await this.rateLimiter.release({
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+            });
+        }
+
+        if (this.costBreaker) {
+            const actualCost = (this.costBreaker.constructor as any).estimateCost(
+                'gemini',
+                usage.inputTokens,
+                usage.outputTokens
+            );
+            await this.costBreaker.recordCost(actualCost);
+        }
+
+        logger.debug('Gemini tool step completed', {
+            model: this.model,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            toolCalls: toolCalls.length,
+            finishReason: data.candidates?.[0]?.finishReason,
+        });
+
+        return {
+            toolCalls: toolCalls.length ? toolCalls : undefined,
+            finalText: finalText.length ? finalText : undefined,
+            usage,
+        };
+    }
+}
+
+/**
+ * Translate a provider-neutral `ToolMessage` into a Gemini `Content` entry.
+ * Tool results become `functionResponse` parts keyed by tool name; assistant
+ * tool requests become `functionCall` parts on a `model` turn.
+ */
+function toGeminiContent(m: ToolMessage): { role: 'user' | 'model'; parts: unknown[] } {
+    if (m.role === 'tool') {
+        return {
+            role: 'user',
+            parts: (m.toolResults ?? []).map(r => ({
+                functionResponse: {
+                    name: r.toolName,
+                    response: r.isError ? { error: r.content } : { result: r.content },
+                },
+            })),
+        };
+    }
+    if (m.role === 'assistant') {
+        const parts: unknown[] = [];
+        if (m.content) parts.push({ text: m.content });
+        for (const tc of m.toolCalls ?? []) {
+            parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+        }
+        return { role: 'model', parts };
+    }
+    // 'user' (system is handled separately by the caller)
+    return { role: 'user', parts: [{ text: m.content ?? '' }] };
 }
 
 // Register the adapter

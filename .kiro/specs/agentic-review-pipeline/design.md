@@ -197,7 +197,7 @@ export interface ConsensusConfig {
   weights: Record<AgentSource, number>; // defaults per R5.7
   keepThreshold: number;   // 0.70
   downgradeThreshold: number; // 0.40
-  verifyBand: [number, number]; // uncertain range around keepThreshold
+  verifyBand: [number, number]; // [0.50, 0.70) — uncertain range; map-chunk (0.50) → VERIFY
   verifiedFloor: number;   // 0.60
 }
 

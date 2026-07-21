@@ -1,6 +1,34 @@
 export type AIProvider = 'claude' | 'gemini';
 
 /**
+ * The classification of a PR determining how much review effort it receives.
+ * - `fast`: docs/config-only trivial changes; skips graphify/personas/consensus/verify.
+ * - `full`: default track for any non-trivial code or dependency change.
+ * - `deep`: security-sensitive or explicitly escalated PRs; all phases + largest budgets.
+ *
+ * Shared with the container (mirrored in `container/src/types/env.ts`).
+ */
+export type ReviewTrack = 'fast' | 'full' | 'deep';
+
+/**
+ * Independent feature flags for the hybrid two-tier review pipeline (R11.1).
+ * Every flag defaults to `false` so the pipeline behaves exactly as the
+ * pre-feature pipeline until a capability is explicitly enabled.
+ *
+ * Resolved from the corresponding `ENABLE_*` environment variables.
+ */
+export interface PipelineFlags {
+  /** Edge-worker rule-based track classifier. Default: false. */
+  enableTriage: boolean;
+  /** Standalone supply-chain scanner over all changed files. Default: false. */
+  enableDependencyAudit: boolean;
+  /** Rule-based confidence router over LLM findings. Default: false. */
+  enableConsensus: boolean;
+  /** Bounded LLM tool-use verification loop. Default: false. */
+  enableAgenticVerifier: boolean;
+}
+
+/**
  * Cloudflare Worker environment bindings.
  * Secrets set via: wrangler secret put <KEY>
  * Vars set via: wrangler.jsonc vars block or wrangler deploy --var
@@ -60,6 +88,16 @@ export interface Env {
   /** GitHub check run name to wait for before starting review. Default: "Cloudflare Pages". Set empty to skip deferral. */
   BUILD_CHECK_NAME?: string;
 
+  // --- Agentic Review Pipeline Feature Flags (all default "false") ---
+  /** Enable rule-based PR triage / track assignment ("true" to enable). Default: "false". */
+  ENABLE_TRIAGE?: string;
+  /** Enable the supply-chain dependency audit stage ("true" to enable). Default: "false". */
+  ENABLE_DEPENDENCY_AUDIT?: string;
+  /** Enable the consensus confidence router ("true" to enable). Default: "false". */
+  ENABLE_CONSENSUS?: string;
+  /** Enable the bounded agentic verifier ("true" to enable). Default: "false". */
+  ENABLE_AGENTIC_VERIFIER?: string;
+
   // --- Queues ---
   /** The Queue responsible for processing reviews in the background */
   REVIEW_QUEUE: Queue<ReviewMessage>;
@@ -97,4 +135,12 @@ export interface ReviewMessage {
   prDescription?: string;
   /** If true, the container will skip "previously raised" suppression, force dual-agent, and use thorough prompts. */
   deepReview?: boolean;
+  /**
+   * Review track assigned by the Triage_Gatekeeper (R1.4). Absent when triage is
+   * disabled or the file list was unavailable at webhook time; the container
+   * defaults to `full` and may finalize the track once files are known.
+   */
+  track?: ReviewTrack;
+  /** Phase names the scheduler should skip for this review (e.g. from a `fast` track). */
+  skipAgents?: string[];
 }

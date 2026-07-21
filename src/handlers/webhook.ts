@@ -1,6 +1,7 @@
-import type { Env } from '../types/env';
+import type { Env, ReviewTrack } from '../types/env';
 import type { PullRequestWebhookPayload } from '../types/github';
 import { REVIEWABLE_ACTIONS, BUILD_CHECK_NAME } from '../config/constants';
+import { triagePR, DEFAULT_TRIAGE_CONFIG } from '../lib/triage-rules';
 import { verifyWebhookSignature } from '../lib/security';
 import { getInstallationToken } from '../lib/github-auth';
 import { createCheckRun, updateCheckRun, updateCheckRunProgress, getCommitCheckRuns } from '../lib/github';
@@ -9,6 +10,47 @@ import { isDuplicateWebhook } from '../lib/webhook-dedup';
 import { createSecureJsonResponse } from '../lib/security-headers';
 import { logger } from '../lib/logger';
 import { getRequestId } from '../lib/request-context';
+
+/**
+ * Compute the provisional Triage_Gatekeeper fields to attach to a ReviewMessage (R1.4, R1.5, R1.8).
+ *
+ * Gated by the `ENABLE_TRIAGE` flag (R1.5, R11.1): when the flag is not exactly
+ * `"true"`, this returns an empty object so NO `track` is attached and the
+ * container defaults to `full` (preserving disabled-equivalence, R9.2).
+ *
+ * At webhook time the changed-file list is generally unavailable, so `files` is
+ * omitted and `triagePR` yields a PROVISIONAL decision from labels/title/target
+ * branch (R1.8). The container finalizes the track once files are known.
+ */
+function buildTriageFields(
+    env: Env,
+    input: { labels: string[]; title: string; targetBranch: string },
+): { track?: ReviewTrack; skipAgents?: string[] } {
+    if (env.ENABLE_TRIAGE !== 'true') {
+        return {};
+    }
+
+    const decision = triagePR(
+        {
+            labels: input.labels,
+            title: input.title,
+            targetBranch: input.targetBranch,
+        },
+        DEFAULT_TRIAGE_CONFIG,
+    );
+
+    // R10.1: log the assigned track and reason.
+    logger.info('Triage assigned provisional review track', {
+        track: decision.track,
+        reason: decision.reason,
+        provisional: decision.provisional,
+    });
+
+    return {
+        track: decision.track,
+        ...(decision.skipAgents.length > 0 ? { skipAgents: decision.skipAgents } : {}),
+    };
+}
 
 /**
  * Core webhook handler — called for every POST / request.
@@ -133,6 +175,10 @@ export async function handlePRWebhook(
                         prAuthor: deferred.prAuthor,
                         requestId: getRequestId(),
                         prDescription: deferred.prDescription,
+                        // Re-attach the provisional triage decision persisted at
+                        // defer time (R1.4). Absent when triage was disabled.
+                        ...(deferred.track ? { track: deferred.track } : {}),
+                        ...(deferred.skipAgents ? { skipAgents: deferred.skipAgents } : {}),
                     });
                 }
 
@@ -581,6 +627,16 @@ export async function handlePRWebhook(
         repo: repository.full_name,
     });
 
+    // ── Triage (R1): assign a provisional Review_Track before enqueueing. ──
+    // Gated by ENABLE_TRIAGE; when off, no track is attached (container → full).
+    // File list is unavailable at webhook time, so the decision is provisional
+    // from labels/title/target branch (R1.8); the container finalizes it.
+    const triageFields = buildTriageFields(env, {
+        labels: (pr.labels ?? []).map(l => l.name),
+        title: pr.title,
+        targetBranch: pr.base.ref,
+    });
+
 	// ── Deferral check: wait for another CI check to complete first ──
 	const buildCheckName = env.BUILD_CHECK_NAME !== undefined ? env.BUILD_CHECK_NAME : BUILD_CHECK_NAME;
 	if (buildCheckName) {
@@ -607,6 +663,9 @@ export async function handlePRWebhook(
 							prAuthor: pr.user.login,
 							prDescription: pr.body ? pr.body.slice(0, 2000) : undefined,
 							timestamp: Date.now(),
+							// Persist the provisional triage decision so the deferred
+							// dispatch (after the build gate) can re-attach it (R1.4).
+							...triageFields,
 						}), { expirationTtl: 1800 });
 					} catch (kvErr) {
 						logger.warn('Failed to store deferred review in KV', { error: String(kvErr) });
@@ -707,6 +766,8 @@ export async function handlePRWebhook(
             prAuthor: pr.user.login,
             requestId: getRequestId(),
             prDescription: pr.body ? pr.body.slice(0, 2000) : undefined,
+            // Provisional Review_Track from triage (R1.4); absent when disabled.
+            ...triageFields,
         });
     } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);

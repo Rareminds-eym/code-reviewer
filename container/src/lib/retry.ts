@@ -380,6 +380,12 @@ export const circuitBreakers = {
     anthropicSynth: new CircuitBreaker('anthropic-synth', { failureThreshold: 2, cooldownMs: 45000 }),
     geminiMap: new CircuitBreaker('gemini-map', { failureThreshold: 3, cooldownMs: 60000 }),
     geminiSynth: new CircuitBreaker('gemini-synth', { failureThreshold: 2, cooldownMs: 45000 }),
+    // --- Agentic Review Pipeline stages (R2.4) ---
+    // These rule-based ($0) stages carry breakers so the Scheduler can disable a
+    // repeatedly-failing stage for the current review (breaker-aware scheduling).
+    triage: new CircuitBreaker('triage', { failureThreshold: 5, cooldownMs: 30000 }),
+    dependencyAudit: new CircuitBreaker('dependency-audit', { failureThreshold: 5, cooldownMs: 30000 }),
+    consensus: new CircuitBreaker('consensus', { failureThreshold: 5, cooldownMs: 30000 }),
 };
 
 /**

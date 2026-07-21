@@ -20,6 +20,7 @@ Complete guide to the Industrial-Grade Code Reviewer system.
 - **[docs/CONFIGURATION.md](./docs/CONFIGURATION.md)** - `.codereview.yml` setup and custom rules
 - **[docs/CODEREVIEW_YML_GUIDE.md](./docs/CODEREVIEW_YML_GUIDE.md)** - Complete configuration guide with examples
 - **[docs/INTEGRATIONS.md](./docs/INTEGRATIONS.md)** - Zoho Cliq, Slack, and OAuth setup
+- **[AGENTIC_ROLLOUT_NOTES.md](./AGENTIC_ROLLOUT_NOTES.md)** - Agentic review pipeline feature flags, staged rollout order, tunables, and deferred items
 
 ## 🏗️ Architecture
 

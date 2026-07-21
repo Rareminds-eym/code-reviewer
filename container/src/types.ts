@@ -1,3 +1,5 @@
+import type { ReviewTrack } from './types/env';
+
 /**
  * Review request payload sent from the Cloudflare Worker queue handler
  * to the container's POST /review endpoint.
@@ -16,6 +18,14 @@ export interface ReviewRequest {
   checkRunId?: number;
   /** If true, skip "previously raised" suppression and use enhanced/deep review prompts. */
   deepReview?: boolean;
+  /**
+   * Review track assigned by the Triage_Gatekeeper (R1.4). Absent when triage is
+   * disabled or the file list was unavailable at webhook time; the container
+   * defaults to `full` and finalizes the track once files are known.
+   */
+  track?: ReviewTrack;
+  /** Phase names the scheduler should skip for this review (e.g. from a `fast` track). */
+  skipAgents?: string[];
 }
 
 /**

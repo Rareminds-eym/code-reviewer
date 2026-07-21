@@ -17,7 +17,13 @@ export const USAGE_METRICS_SCHEMA_VERSION = 1;
  * Usage data for a single LLM call (chunk review or synthesis)
  */
 export interface LLMCallUsage {
-    phase: 'map' | 'reduce';
+    /**
+     * The pipeline stage that produced this usage. `verify` is the bounded
+     * Agentic_Verifier stage (Task 16 / R6.13), recorded as a distinct phase so
+     * its cost is separately measurable from MAP chunk reviews and the REDUCE
+     * synthesis / single-shot Stage 2.
+     */
+    phase: 'map' | 'reduce' | 'verify';
     chunkLabel?: string; // Only for map phase
     model: string;
     usage: TokenUsage;

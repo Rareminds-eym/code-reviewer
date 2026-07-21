@@ -80,6 +80,27 @@ export const SpanAttributes = {
     // Concurrency attributes
     CONCURRENCY_LEVEL: 'concurrency.level',
     CONCURRENCY_ERROR_RATE: 'concurrency.error_rate',
+
+    // Hybrid two-tier pipeline attributes (agentic-review-pipeline R10.6)
+    REVIEW_TRACK: 'review.track',
+    REVIEW_TRACK_REASON: 'review.track.reason',
+    REVIEW_TRACK_PROVISIONAL: 'review.track.provisional',
+    REVIEW_TRACK_SECURITY_FLOOR: 'review.track.security_floor',
+    REVIEW_TRACK_CONFIG_OVERRIDE: 'review.track.config_override',
+    DEP_AUDIT_FINDINGS: 'review.dependency_audit.findings',
+    CONSENSUS_KEEP: 'consensus.keep',
+    CONSENSUS_DOWNGRADE: 'consensus.downgrade',
+    CONSENSUS_VERIFY: 'consensus.verify',
+    CONSENSUS_SUPPRESS: 'consensus.suppress',
+    VERIFIER_EVALUATED: 'verifier.evaluated',
+    VERIFIER_VERIFIED: 'verifier.verified',
+    VERIFIER_REJECTED: 'verifier.rejected',
+    VERIFIER_FLIPS: 'verifier.flips',
+    VERIFIER_FLIP_RATE: 'verifier.flip_rate',
+    VERIFIER_TOKENS: 'verifier.tokens',
+    SCHEDULE_CONSENSUS_ENABLED: 'schedule.consensus_enabled',
+    SCHEDULE_VERIFIER_ENABLED: 'schedule.verifier_enabled',
+    SCHEDULE_PERSONAS_ENABLED: 'schedule.personas_enabled',
 };
 
 /**
@@ -94,6 +115,13 @@ export const SpanNames = {
     GITHUB_API_CALL: 'github.api.call',
     RATE_LIMIT_WAIT: 'rate_limit.wait',
     COST_CHECK: 'cost.check',
+
+    // Hybrid two-tier pipeline stages (agentic-review-pipeline R10.6)
+    TRIAGE_FINALIZE: 'review.triage.finalize',
+    SCHEDULE_BUILD: 'review.schedule.build',
+    DEPENDENCY_AUDIT: 'review.dependency_audit',
+    CONSENSUS_ROUTE: 'review.consensus.route',
+    AGENTIC_VERIFY: 'review.agentic_verify',
 };
 
 /**

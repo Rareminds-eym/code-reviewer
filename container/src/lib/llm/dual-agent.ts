@@ -12,12 +12,27 @@ import { logger } from '../logger.js';
 // Types
 // ---------------------------------------------------------------------------
 
+/** The Stage-1 personas that can raise a finding. */
+export type Stage1Persona = 'architect' | 'sre' | 'security';
+
+/**
+ * A Stage-1 finding carrying optional per-finding persona attribution (R9.5 —
+ * metadata only). `personas` is the set of personas that produced this finding;
+ * after dedup it is the UNION across the personas that raised the same
+ * file/title/line. Structurally a `ReviewFinding` with one extra optional field,
+ * so it remains assignable to `ReviewFinding[]` everywhere the plain shape is
+ * expected (non-breaking).
+ */
+export interface PersonaTaggedFinding extends ReviewFinding {
+    personas?: Stage1Persona[];
+}
+
 export interface Stage1Result {
-    findings: ReviewFinding[];
+    findings: PersonaTaggedFinding[];
     usage: TokenUsage;
     webSearchMetadata?: WebSearchMetadata;
     personaResults: Array<{
-        persona: 'architect' | 'sre' | 'security';
+        persona: Stage1Persona;
         findingsCount: number;
         usage: TokenUsage;
     }>;
@@ -168,7 +183,7 @@ export async function runStage1Review(
         return { findings: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, personaResults: [] };
     }
 
-    const allFindings: ReviewFinding[] = [];
+    const allFindings: PersonaTaggedFinding[] = [];
     let totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
     const personaResults: Stage1Result['personaResults'] = [];
 
@@ -229,10 +244,13 @@ export async function runStage1Review(
             }
         );
 
-        // Collect findings from all personas for this chunk
+        // Collect findings from all personas for this chunk, tagging each finding
+        // with the persona that produced it (R9.5 — provenance metadata only).
         for (const result of personaFindings) {
             if (result instanceof Error) continue;
-            allFindings.push(...result.findings);
+            for (const f of result.findings) {
+                allFindings.push({ ...f, personas: [result.persona] });
+            }
             personaResults.push({
                 persona: result.persona,
                 findingsCount: result.findings.length,
@@ -241,14 +259,24 @@ export async function runStage1Review(
         }
     }
 
-    // Deduplicate Stage 1 findings
-    const seen = new Set<string>();
-    const deduplicated: ReviewFinding[] = [];
+    // Deduplicate Stage 1 findings. Dedup keys, survivors, and ordering are
+    // IDENTICAL to before (first occurrence wins); we ADDITIONALLY union the
+    // persona attribution across merged duplicates so multi-persona agreement is
+    // preserved for the downstream Consensus_Router (R9.5 — metadata only).
+    const seen = new Map<string, PersonaTaggedFinding>();
+    const deduplicated: PersonaTaggedFinding[] = [];
     for (const f of allFindings) {
         const key = `${f.file}::${f.title.toLowerCase().trim()}::${f.line || ''}`;
-        if (!seen.has(key)) {
-            seen.add(key);
-            deduplicated.push(f);
+        const existing = seen.get(key);
+        if (!existing) {
+            const copy: PersonaTaggedFinding = { ...f, personas: [...(f.personas ?? [])] };
+            seen.set(key, copy);
+            deduplicated.push(copy);
+        } else {
+            // Union persona attribution into the retained finding (no count/order change).
+            for (const p of f.personas ?? []) {
+                if (!existing.personas!.includes(p)) existing.personas!.push(p);
+            }
         }
     }
 

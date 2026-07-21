@@ -35,6 +35,8 @@ export interface GitHubPullRequest {
         sha: string;
     };
     user: GitHubUser;
+    /** Labels attached to the PR; used by the Triage_Gatekeeper (R1). May be absent. */
+    labels?: Array<{ name: string }>;
 }
 
 export interface PullRequestWebhookPayload {

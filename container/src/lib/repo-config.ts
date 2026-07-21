@@ -10,6 +10,7 @@
  */
 
 import type { TechStackProfile, DetectedFramework, DetectedStateLib, DetectedDataLib, DetectedStylingLib, DetectedArchPattern, DetectedFormLib, DetectedValidationLib, DetectedTestLib, DetectedLanguage } from '../types/stack';
+import type { ReviewTrack } from '../types/env';
 import { logger } from './logger';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,27 @@ export interface RepoReviewConfig {
 
     /** Glob patterns of files to exclude from review. */
     ignore?: string[];
+
+    /**
+     * Per-repo overrides for the hybrid two-tier review pipeline (R11.3).
+     *
+     * A repo may raise strictness (pick a heavier track, toggle stages on) via
+     * either a `pipeline:` or `review:` section in `.codereview.yml`. CRITICAL:
+     * repo config SHALL NOT lower a security-driven `deep` escalation — the
+     * security floor can only be raised, never weakened (R11.3, Property 10).
+     */
+    pipeline?: {
+        /** Requested Review_Track. Cannot lower a security `deep` floor. */
+        track?: ReviewTrack;
+        /** Toggle the container-side triage/track finalization. */
+        enableTriage?: boolean;
+        /** Toggle the supply-chain dependency audit stage. */
+        enableDependencyAudit?: boolean;
+        /** Toggle the consensus confidence router. */
+        enableConsensus?: boolean;
+        /** Toggle the bounded agentic verifier. */
+        enableAgenticVerifier?: boolean;
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +498,25 @@ function findValidatedString(
 }
 
 /**
+ * Find the first boolean value for `key`, checking `primary` first then a full
+ * tree search. Returns undefined when no boolean is present (so callers can
+ * distinguish "unset" from "false").
+ */
+function findBoolean(primary: Record<string, unknown>, tree: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+    for (const key of keys) {
+        const val = primary[key];
+        if (typeof val === 'boolean') return val;
+    }
+    for (const key of keys) {
+        const hits = deepFindAll(tree, key);
+        for (const hit of hits) {
+            if (typeof hit === 'boolean') return hit;
+        }
+    }
+    return undefined;
+}
+
+/**
  * Find an array of strings at `key`, checking primary then full tree.
  */
 function findStringArray(primary: Record<string, unknown>, tree: Record<string, unknown>, ...keys: string[]): string[] | undefined {
@@ -595,6 +636,32 @@ function validateConfig(raw: Record<string, unknown>): RepoReviewConfig {
         config.ignore = raw['ignore'].filter((g): g is string => typeof g === 'string');
     }
 
+    // ── Pipeline overrides (R11.3) ─────────────────────────────────────────
+    // Accept either a `pipeline:` or `review:` section. The `track` value is
+    // validated against the known tracks; the enable-flags are read as booleans.
+    const pipelineObj =
+        (raw['pipeline'] && typeof raw['pipeline'] === 'object' && !Array.isArray(raw['pipeline']))
+            ? raw['pipeline'] as Record<string, unknown>
+            : (raw['review'] && typeof raw['review'] === 'object' && !Array.isArray(raw['review']))
+                ? raw['review'] as Record<string, unknown>
+                : {};
+
+    const track = findValidatedString(pipelineObj, raw, VALID_TRACKS, 'track');
+    const enableTriage = findBoolean(pipelineObj, raw, 'enableTriage', 'enable_triage');
+    const enableDependencyAudit = findBoolean(pipelineObj, raw, 'enableDependencyAudit', 'enable_dependency_audit');
+    const enableConsensus = findBoolean(pipelineObj, raw, 'enableConsensus', 'enable_consensus');
+    const enableAgenticVerifier = findBoolean(pipelineObj, raw, 'enableAgenticVerifier', 'enable_agentic_verifier');
+
+    if (track || enableTriage !== undefined || enableDependencyAudit !== undefined ||
+        enableConsensus !== undefined || enableAgenticVerifier !== undefined) {
+        config.pipeline = {};
+        if (track === 'fast' || track === 'full' || track === 'deep') config.pipeline.track = track;
+        if (enableTriage !== undefined) config.pipeline.enableTriage = enableTriage;
+        if (enableDependencyAudit !== undefined) config.pipeline.enableDependencyAudit = enableDependencyAudit;
+        if (enableConsensus !== undefined) config.pipeline.enableConsensus = enableConsensus;
+        if (enableAgenticVerifier !== undefined) config.pipeline.enableAgenticVerifier = enableAgenticVerifier;
+    }
+
     return config;
 }
 
@@ -612,6 +679,8 @@ const VALID_FORMS: ReadonlySet<string> = new Set(['react-hook-form', 'formik']);
 const VALID_VALIDATION: ReadonlySet<string> = new Set(['zod', 'yup', 'joi', 'valibot', 'pydantic']);
 const VALID_TESTING: ReadonlySet<string> = new Set(['vitest', 'jest', 'pytest', 'go-test', 'mocha']);
 const VALID_DATA_FETCHING: ReadonlySet<string> = new Set(['tanstack-query', 'swr', 'apollo', 'urql', 'trpc']);
+/** Valid Review_Track values a repo may request via `.codereview.yml` (R11.3). */
+const VALID_TRACKS: ReadonlySet<string> = new Set(['fast', 'full', 'deep']);
 
 /**
  * Apply .codereview.yml stack overrides to an auto-detected profile.
@@ -720,6 +789,81 @@ function globToRegex(pattern: string): RegExp {
     }
 
     return new RegExp(`^${regexStr}$`, 'i');
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline Overrides (R11.3)
+// ---------------------------------------------------------------------------
+
+/** Track ordering used to enforce the security `deep` floor (higher = heavier). */
+const TRACK_RANK: Record<ReviewTrack, number> = { fast: 0, full: 1, deep: 2 };
+
+/** The resolved effect of applying a repo's `.codereview.yml` pipeline section. */
+export interface PipelineOverrideResult {
+    /** The effective Review_Track after applying the override + security floor. */
+    track: ReviewTrack;
+    /**
+     * Per-stage enable overrides, `undefined` where the repo left a flag unset
+     * (so the environment default applies). Passed to `buildAgentSchedule` via
+     * an env overlay.
+     */
+    flags: {
+        enableTriage?: boolean;
+        enableDependencyAudit?: boolean;
+        enableConsensus?: boolean;
+        enableAgenticVerifier?: boolean;
+    };
+    /** True when a repo-config track request was clamped up to the security floor. */
+    securityFloorEnforced: boolean;
+    /** True when the effective track differs from the finalized (pre-override) track. */
+    trackChanged: boolean;
+}
+
+/**
+ * Apply a repo's `.codereview.yml` pipeline overrides to the container-finalized
+ * Review_Track and feature flags (R11.3).
+ *
+ * Security-floor monotonicity (Property 10): when `securityDeepFloor` is true —
+ * the PR triggered a security-driven `deep` escalation — a repo request to run
+ * at a track BELOW `deep` is rejected and clamped back up to `deep`. The repo
+ * can still RAISE the track (e.g. `full` → `deep`) or toggle stages on; it can
+ * never weaken the security escalation.
+ */
+export function applyPipelineConfigOverrides(
+    finalizedTrack: ReviewTrack,
+    securityDeepFloor: boolean,
+    config: RepoReviewConfig | null | undefined,
+): PipelineOverrideResult {
+    const result: PipelineOverrideResult = {
+        track: finalizedTrack,
+        flags: {},
+        securityFloorEnforced: false,
+        trackChanged: false,
+    };
+
+    const p = config?.pipeline;
+    if (!p) return result;
+
+    if (p.track) {
+        if (securityDeepFloor && TRACK_RANK[p.track] < TRACK_RANK.deep) {
+            // Repo tried to lower a security `deep` escalation — reject (R11.3).
+            result.track = 'deep';
+            result.securityFloorEnforced = true;
+            result.trackChanged = finalizedTrack !== 'deep';
+        } else {
+            result.track = p.track;
+            result.trackChanged = p.track !== finalizedTrack;
+        }
+    }
+
+    result.flags = {
+        enableTriage: p.enableTriage,
+        enableDependencyAudit: p.enableDependencyAudit,
+        enableConsensus: p.enableConsensus,
+        enableAgenticVerifier: p.enableAgenticVerifier,
+    };
+
+    return result;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { LLMProviderAdapter, type LLMProviderConfig, type LLMResponse, type ChunkReviewRequest, type SynthesisRequest } from '../adapter';
+import { LLMProviderAdapter, type LLMProviderConfig, type LLMResponse, type ChunkReviewRequest, type SynthesisRequest, type ToolDef, type ToolCall, type ToolLoopStep, type ToolMessage } from '../adapter';
 import { MODELS } from '../../../config/constants';
 import { logger } from '../../logger';
 import { handleLLMErrorResponse } from '../error-handler';
@@ -565,6 +565,178 @@ ${payload}`;
 
         return { content, usage, webSearchMetadata: synthWebSearchMetadata };
     }
+
+    // ---------------------------------------------------------------------------
+    // Tool-calling capability (R8) — powers the Agentic Verifier loop
+    // ---------------------------------------------------------------------------
+
+    /** Claude supports native tool use (R8.2). */
+    override supportsToolCalling(): boolean {
+        return true;
+    }
+
+    /**
+     * Run one step of a tool-calling loop against the Anthropic Messages API
+     * (R8.1). Returns any `tool_use` requests as `toolCalls`, any assistant text
+     * as `finalText`, and always surfaces per-completion token usage (R8.3).
+     */
+    override async runToolStep(
+        messages: ToolMessage[],
+        tools: ToolDef[],
+        signal?: AbortSignal
+    ): Promise<ToolLoopStep> {
+        // Separate system policy from the conversation turns.
+        const systemText = messages
+            .filter(m => m.role === 'system')
+            .map(m => m.content ?? '')
+            .filter(Boolean)
+            .join('\n\n');
+        const anthropicMessages = messages
+            .filter(m => m.role !== 'system')
+            .map(toClaudeMessage);
+
+        const anthropicTools = tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            input_schema: t.inputSchema,
+        }));
+
+        const maxTokens = this.maxTokens;
+
+        // Estimate tokens for rate limiter and cost breaker.
+        const estimatedInputTokens = Math.ceil(
+            (systemText.length + JSON.stringify(anthropicMessages).length + JSON.stringify(anthropicTools).length) / 4
+        );
+        const estimatedOutputTokens = maxTokens;
+
+        if (this.rateLimiter) {
+            const rateLimitResult = await this.rateLimiter.acquire({
+                estimatedInputTokens,
+                estimatedOutputTokens,
+                timeoutMs: 30000,
+            });
+            if (!rateLimitResult.allowed) {
+                throw new Error(`Rate limit exceeded: retry after ${rateLimitResult.retryAfterMs}ms`);
+            }
+        }
+
+        if (this.costBreaker) {
+            const estimatedCost = (this.costBreaker.constructor as any).estimateCost(
+                'claude',
+                estimatedInputTokens,
+                estimatedOutputTokens
+            );
+            const budgetCheck = await this.costBreaker.checkBudget(estimatedCost);
+            if (!budgetCheck.allowed) {
+                throw new Error(`Cost budget exceeded: ${budgetCheck.reason}`);
+            }
+        }
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'x-api-key': this.config.apiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: this.model,
+                max_tokens: maxTokens,
+                temperature: this.temperature,
+                ...(systemText ? { system: systemText } : {}),
+                messages: anthropicMessages,
+                ...(anthropicTools.length ? { tools: anthropicTools } : {}),
+            }),
+            signal,
+        });
+
+        if (!response.ok) {
+            if (this.rateLimiter && (response.status === 429 || response.status === 529)) {
+                await this.rateLimiter.reportError(response.status);
+            }
+            await handleLLMErrorResponse(response, 'Claude');
+        }
+
+        const data = await response.json() as ClaudeAPIResponse;
+
+        const toolCalls: ToolCall[] = data.content
+            .filter(b => b.type === 'tool_use')
+            .map(b => ({ id: b.id ?? '', name: b.name ?? '', arguments: b.input }));
+
+        const finalText = data.content
+            .filter(b => b.type === 'text')
+            .map(b => b.text ?? '')
+            .join('\n')
+            .trim();
+
+        const usage: TokenUsage = {
+            inputTokens: data.usage.input_tokens,
+            outputTokens: data.usage.output_tokens,
+            totalTokens: data.usage.input_tokens + data.usage.output_tokens,
+        };
+
+        if (this.rateLimiter) {
+            await this.rateLimiter.release({
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+            });
+        }
+
+        if (this.costBreaker) {
+            const actualCost = (this.costBreaker.constructor as any).estimateCost(
+                'claude',
+                usage.inputTokens,
+                usage.outputTokens
+            );
+            await this.costBreaker.recordCost(actualCost);
+        }
+
+        logger.debug('Claude tool step completed', {
+            model: this.model,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            toolCalls: toolCalls.length,
+            stopReason: data.stop_reason,
+        });
+
+        return {
+            toolCalls: toolCalls.length ? toolCalls : undefined,
+            finalText: finalText.length ? finalText : undefined,
+            usage,
+        };
+    }
+}
+
+/**
+ * Translate a provider-neutral `ToolMessage` into an Anthropic message.
+ * Tool results are sent as a `user` message containing `tool_result` blocks;
+ * assistant tool requests are sent as `tool_use` blocks.
+ */
+function toClaudeMessage(m: ToolMessage): { role: 'user' | 'assistant'; content: unknown } {
+    if (m.role === 'tool') {
+        return {
+            role: 'user',
+            content: (m.toolResults ?? []).map(r => ({
+                type: 'tool_result',
+                tool_use_id: r.toolCallId,
+                content: r.content,
+                ...(r.isError ? { is_error: true } : {}),
+            })),
+        };
+    }
+    if (m.role === 'assistant') {
+        if (m.toolCalls && m.toolCalls.length) {
+            const blocks: unknown[] = [];
+            if (m.content) blocks.push({ type: 'text', text: m.content });
+            for (const tc of m.toolCalls) {
+                blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
+            }
+            return { role: 'assistant', content: blocks };
+        }
+        return { role: 'assistant', content: m.content ?? '' };
+    }
+    // 'user' (system is handled separately by the caller)
+    return { role: 'user', content: m.content ?? '' };
 }
 
 // Register the adapter
